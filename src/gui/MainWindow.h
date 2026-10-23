@@ -17,6 +17,10 @@ class QTextBrowser;
 class QPlainTextEdit;
 class QDockWidget;
 class QLabel;
+class QTabWidget;
+class QToolBar;
+
+class BoardView;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -38,13 +42,18 @@ private slots:
     void exportJson();
     void exportHtml();
     void copyBomToClipboard();
+    void exportSvg();
+    void updateBoardOptions();
     void applyFilter(const QString& text);
     void showSelectedComponent();
     void showDocumentSummary();
+    void selectComponentByIndex(int index);
+
 
 private:
     void createActions();
     void createMenus();
+    void createToolBar();
     void createDockPanels();
     void createComponentTable();
     void applyTheme();
@@ -60,6 +69,8 @@ private:
     pcbv::Document document_;
     bool hasDocument_ = false;
 
+    QTabWidget* tabs_ = nullptr;
+    BoardView* boardView_ = nullptr;
     QTableWidget* table_ = nullptr;
     QLineEdit* filterEdit_ = nullptr;
     QLabel* tableInfoLabel_ = nullptr;
@@ -76,5 +87,15 @@ private:
     QAction* htmlAction_ = nullptr;
     QAction* copyAction_ = nullptr;
     QAction* summaryAction_ = nullptr;
+    QAction* svgAction_ = nullptr;
+    QAction* zoomInAction_ = nullptr;
+    QAction* zoomOutAction_ = nullptr;
+    QAction* fitAction_ = nullptr;
+    QAction* topLayerAction_ = nullptr;
+    QAction* bottomLayerAction_ = nullptr;
+    QAction* silkAction_ = nullptr;
+    QAction* padsAction_ = nullptr;
+    QAction* designatorsAction_ = nullptr;
+    QAction* mechanicalAction_ = nullptr;
     QAction* exitAction_ = nullptr;
 };

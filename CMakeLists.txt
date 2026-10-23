@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(PcbAiViewer VERSION 0.2.0 LANGUAGES CXX)
+project(PcbAiViewer VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -24,6 +24,10 @@ add_library(pcbv_core STATIC
     src/core/AltiumParser.cpp
     src/core/AltiumParser.h
     src/core/AsciiParser.cpp
+    src/core/BoardRender.cpp
+    src/core/BoardRender.h
+    src/core/BoardSvg.cpp
+    src/core/LayerStyle.h
     src/core/Export.cpp
     src/core/Export.h
     src/core/Model.h
@@ -51,6 +55,8 @@ if(PCBV_BUILD_GUI)
         set(CMAKE_AUTOMOC ON)
         add_executable(pcbv-gui
             src/gui/main.cpp
+            src/gui/BoardView.cpp
+            src/gui/BoardView.h
             src/gui/MainWindow.cpp
             src/gui/MainWindow.h
         )

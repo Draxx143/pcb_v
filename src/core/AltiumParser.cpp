@@ -293,6 +293,7 @@ void parseBinaryPcb(CompoundFile& cf, Document& doc) {
             const auto it = netNames.find(netIndex);
             if (netIndex >= 0 && it != netNames.end()) pad.net = it->second;
             doc.bounds.add(pad.x, pad.y);
+            doc.geometry.pads.push_back(pad);
             if (componentIndex >= 0 && componentIndex < static_cast<int>(doc.components.size())) {
                 Component& c = doc.components[static_cast<std::size_t>(componentIndex)];
                 c.pads.push_back(pad);
@@ -318,10 +319,18 @@ void parseBinaryPcb(CompoundFile& cf, Document& doc) {
             const std::uint32_t size = rdU32(trackData, pos) & kBlockSizeMask;
             pos += 4;
             if (size == 0 || pos + size > trackData.size()) break;
-            doc.bounds.add(static_cast<double>(rdI32(trackData, pos + 13)) / 10000.0,
-                           static_cast<double>(rdI32(trackData, pos + 17)) / 10000.0);
-            doc.bounds.add(static_cast<double>(rdI32(trackData, pos + 21)) / 10000.0,
-                           static_cast<double>(rdI32(trackData, pos + 25)) / 10000.0);
+            TrackFeature track;
+            track.layer = rdB(trackData, pos);
+            track.x1 = static_cast<double>(rdI32(trackData, pos + 13)) / 10000.0;
+            track.y1 = static_cast<double>(rdI32(trackData, pos + 17)) / 10000.0;
+            track.x2 = static_cast<double>(rdI32(trackData, pos + 21)) / 10000.0;
+            track.y2 = static_cast<double>(rdI32(trackData, pos + 25)) / 10000.0;
+            track.width = static_cast<double>(rdI32(trackData, pos + 29)) / 10000.0;
+            const auto trackNet = netNames.find(rdU16(trackData, pos + 3));
+            if (trackNet != netNames.end()) track.net = trackNet->second;
+            doc.bounds.add(track.x1, track.y1);
+            doc.bounds.add(track.x2, track.y2);
+            doc.geometry.tracks.push_back(track);
             pos += size;
             ++count;
             if (pos == before) break;
@@ -340,13 +349,50 @@ void parseBinaryPcb(CompoundFile& cf, Document& doc) {
             const std::uint32_t size = rdU32(viaData, pos) & kBlockSizeMask;
             pos += 4;
             if (size == 0 || pos + size > viaData.size()) break;
-            doc.bounds.add(static_cast<double>(rdI32(viaData, pos + 13)) / 10000.0,
-                           static_cast<double>(rdI32(viaData, pos + 17)) / 10000.0);
+            ViaFeature via;
+            via.x = static_cast<double>(rdI32(viaData, pos + 13)) / 10000.0;
+            via.y = static_cast<double>(rdI32(viaData, pos + 17)) / 10000.0;
+            via.diameter = static_cast<double>(rdI32(viaData, pos + 21)) / 10000.0;
+            via.hole = static_cast<double>(rdI32(viaData, pos + 25)) / 10000.0;
+            const auto viaNet = netNames.find(rdU16(viaData, pos + 3));
+            if (viaNet != netNames.end()) via.net = viaNet->second;
+            doc.bounds.add(via.x, via.y);
+            doc.geometry.vias.push_back(via);
             pos += size;
             ++count;
             if (pos == before) break;
         }
         doc.pcb.vias = count;
+    }
+
+    // --- arcs ---
+    const std::vector<std::uint8_t> arcData = cf.stream("Arcs6/Data");
+    if (!arcData.empty()) {
+        std::size_t pos = 0;
+        int count = 0;
+        while (pos < arcData.size()) {
+            const std::size_t before = pos;
+            ++pos; // object id (1 = arc)
+            if (pos + 4 > arcData.size()) break;
+            const std::uint32_t size = rdU32(arcData, pos) & kBlockSizeMask;
+            pos += 4;
+            if (size < 56 || pos + size > arcData.size()) break;
+            ArcFeature arc;
+            arc.layer = rdB(arcData, pos);
+            arc.cx = static_cast<double>(rdI32(arcData, pos + 13)) / 10000.0;
+            arc.cy = static_cast<double>(rdI32(arcData, pos + 17)) / 10000.0;
+            arc.radius = static_cast<double>(rdI32(arcData, pos + 21)) / 10000.0;
+            arc.startAngle = rdF64(arcData, pos + 25);
+            arc.endAngle = rdF64(arcData, pos + 33);
+            arc.width = static_cast<double>(rdI32(arcData, pos + 41)) / 10000.0;
+            doc.bounds.add(arc.cx - arc.radius, arc.cy - arc.radius);
+            doc.bounds.add(arc.cx + arc.radius, arc.cy + arc.radius);
+            doc.geometry.arcs.push_back(arc);
+            pos = before + 5 + size;
+            ++count;
+            if (pos == before) break;
+        }
+        doc.pcb.arcs = count;
     }
 
     // --- remaining primitive counters ---
@@ -355,7 +401,6 @@ void parseBinaryPcb(CompoundFile& cf, Document& doc) {
         int PcbCounts::*field;
     };
     static const Counter counters[] = {
-        {"Arcs6/Data", &PcbCounts::arcs},
         {"Regions6/Data", &PcbCounts::regions},
         {"BoardRegions/Data", &PcbCounts::boardRegions},
         {"ComponentBodies6/Data", &PcbCounts::componentBodies},

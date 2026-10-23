@@ -54,6 +54,85 @@ struct Pad {
     bool plated = false;
 };
 
+/// A 2D point in mil (PCB coordinates: X to the right, Y up).
+struct Point {
+    double x = 0.0;
+    double y = 0.0;
+};
+
+/// A straight copper/silk segment (PcbDoc "Track").
+struct TrackFeature {
+    double x1 = 0.0, y1 = 0.0;
+    double x2 = 0.0, y2 = 0.0;
+    double width = 0.0;   // mil
+    int layer = 0;        // Altium layer id
+    std::string net;
+};
+
+/// A circular arc (PcbDoc "Arc"): centre, radius, start/end angle in degrees.
+struct ArcFeature {
+    double cx = 0.0, cy = 0.0;
+    double radius = 0.0;
+    double startAngle = 0.0;
+    double endAngle = 360.0;
+    double width = 0.0;   // mil
+    int layer = 0;
+};
+
+/// A plated through hole (PcbDoc "Via").
+struct ViaFeature {
+    double x = 0.0, y = 0.0;
+    double diameter = 0.0;  // mil
+    double hole = 0.0;      // mil
+    std::string net;
+};
+
+/// A filled polygon (PcbDoc "Region", also used for the board shape).
+struct RegionFeature {
+    std::vector<Point> outline;
+    int layer = 0;
+    bool boardOutline = false;  ///< true for the board shape / cut-outs
+    bool pour = false;          ///< copper pour (Polygon record); fill not computed
+    std::string net;
+};
+
+/// A rotated filled rectangle (PcbDoc "Fill").
+struct FillFeature {
+    double x1 = 0.0, y1 = 0.0;
+    double x2 = 0.0, y2 = 0.0;
+    double rotation = 0.0;
+    int layer = 0;
+};
+
+/// A silkscreen / documentation string (PcbDoc "Text").
+struct TextFeature {
+    double x = 0.0, y = 0.0;
+    double height = 0.0;    // mil
+    double rotation = 0.0;
+    int layer = 0;
+    std::string text;
+};
+
+/// Every drawable primitive of a PCB document (used by the board view / SVG export).
+struct PcbGeometry {
+    std::vector<TrackFeature> tracks;
+    std::vector<ArcFeature> arcs;
+    std::vector<ViaFeature> vias;
+    std::vector<RegionFeature> regions;
+    std::vector<FillFeature> fills;
+    std::vector<TextFeature> texts;
+    std::vector<Pad> pads;
+    std::vector<Point> outline;   ///< board contour (ASCII exports and binary Board6 when available)
+
+    bool empty() const {
+        return tracks.empty() && arcs.empty() && vias.empty() && regions.empty() &&
+               fills.empty() && texts.empty() && pads.empty() && outline.size() < 3;
+    }
+    std::size_t primitiveCount() const {
+        return tracks.size() + arcs.size() + vias.size() + regions.size() + fills.size() + texts.size();
+    }
+};
+
 /// A single named property (schematic parameter, PCB component parameter, ...).
 struct Property {
     std::string name;
@@ -152,6 +231,8 @@ struct Document {
 
     /// Record-type histogram (ASCII exports): {"Pad", 102}, {"Track", 465}, ...
     std::vector<std::pair<std::string, int>> recordTypes;
+
+    PcbGeometry geometry;   ///< drawable primitives (empty for schematics)
 
     PcbCounts pcb;
     SchCounts sch;

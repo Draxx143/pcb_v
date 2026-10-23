@@ -117,6 +117,14 @@ std::string toSummaryText(const Document& doc) {
         out << "Arcs        : " << doc.pcb.arcs << "\n";
         out << "Regions     : " << doc.pcb.regions << "\n";
         out << "Component bodies: " << doc.pcb.componentBodies << "\n";
+        out << "Board outline: " << (doc.geometry.outline.size() >= 3
+                                        ? std::to_string(doc.geometry.outline.size()) + " vertices"
+                                        : std::string("not stored in this file"))
+            << "\n";
+        out << "Drawable    : " << doc.geometry.tracks.size() << " tracks, "
+            << doc.geometry.pads.size() << " pads, " << doc.geometry.vias.size() << " vias, "
+            << doc.geometry.arcs.size() << " arcs, " << doc.geometry.fills.size()
+            << " fills, " << doc.geometry.regions.size() << " regions\n";
         if (doc.bounds.valid) {
             out << "Board extent: " << formatMm(doc.bounds.width()) << " x "
                 << formatMm(doc.bounds.height()) << " mm  (" << formatMil(doc.bounds.width())

@@ -5,6 +5,7 @@
 //   pcbv-cli --csv  out.csv  board.PcbDoc      export the BOM
 //   pcbv-cli --json out.json board.PcbDoc      export JSON
 //   pcbv-cli --html report.html board.PcbDoc   export an HTML report
+//   pcbv-cli --svg  board.svg  board.PcbDoc    export the PCB drawing as SVG
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
@@ -27,6 +28,7 @@ void printUsage() {
         "  pcbv-cli --csv  <out.csv>  <file>\n"
         "  pcbv-cli --json <out.json> <file>\n"
         "  pcbv-cli --html <out.html> <file>\n"
+        "  pcbv-cli --svg  <out.svg>  <file.PcbDoc>  board drawing (2D, scalable)\n"
         "  pcbv-cli --details <designator> <file>   print every parameter of one part\n"
         "  pcbv-cli --inspect <file>                show how the file was detected/decoded\n"
         "\n"
@@ -159,7 +161,7 @@ int main(int argc, char** argv) {
     if (mode == "--list" || mode == "--summary") {
         if (args.size() < 2) return fail("missing input file");
         inputPath = args[1];
-    } else if (mode == "--csv" || mode == "--json" || mode == "--html") {
+    } else if (mode == "--csv" || mode == "--json" || mode == "--html" || mode == "--svg") {
         if (args.size() < 3) return fail("usage: " + mode + " <output> <input>");
         outputPath = args[1];
         inputPath = args[2];
@@ -207,6 +209,18 @@ int main(int argc, char** argv) {
     if (mode == "--html") {
         if (!writeFile(outputPath, pcbv::toHtml(doc))) return fail("cannot write " + outputPath);
         std::cout << "wrote " << outputPath << "\n";
+        return 0;
+    }
+    if (mode == "--svg") {
+        const std::string svg = pcbv::toSvg(doc);
+        if (svg.empty()) {
+            std::cerr << "error: no PCB geometry in this document (is it a schematic?)\n";
+            return 1;
+        }
+        if (!writeFile(outputPath, svg)) return fail("cannot write " + outputPath);
+        std::cout << "wrote " << outputPath << " (" << doc.geometry.tracks.size() << " tracks, "
+                  << doc.geometry.pads.size() << " pads, " << doc.geometry.vias.size()
+                  << " vias)\n";
         return 0;
     }
     if (mode == "--details") {

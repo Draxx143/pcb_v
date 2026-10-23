@@ -25,20 +25,26 @@
 #include <QMessageBox>
 #include <QMimeData>
 #include <QPlainTextEdit>
+#include <QPalette>
+#include <QStyleFactory>
 #include <QStringList>
 #include <QStatusBar>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTabWidget>
 #include <QTextBrowser>
+#include <QToolBar>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QUrl>
 #include <QVariant>
 #include <QVBoxLayout>
+#include <QCheckBox>
 #include <QWidget>
 
 #include <cstdint>
 
+#include "BoardView.h"
 #include "core/AltiumParser.h"
 #include "core/Export.h"
 
@@ -78,6 +84,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     createDockPanels();
     createActions();
     createMenus();
+    createToolBar();
 
     statusBar()->showMessage(
         tr("Open an Altium .PcbDoc or .SchDoc file (Ctrl+O), or drag & drop it here."));
@@ -96,9 +103,33 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 // ---------------------------------------------------------------------------
 
 void MainWindow::applyTheme() {
-    qApp->setStyle("Fusion");
+    qApp->setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
+
+    // A complete dark palette matters as much as the style sheet: anything the sheet
+    // does not mention (alternating tree rows, dialogs, scroll-area corners, ...)
+    // falls back to the palette. Without it the tree showed white cells.
+    QPalette palette;
+    palette.setColor(QPalette::Window, QColor(0x1b, 0x1e, 0x24));
+    palette.setColor(QPalette::WindowText, QColor(0xe3, 0xe6, 0xea));
+    palette.setColor(QPalette::Base, QColor(0x17, 0x1a, 0x20));
+    palette.setColor(QPalette::AlternateBase, QColor(0x1f, 0x23, 0x2a));
+    palette.setColor(QPalette::ToolTipBase, QColor(0x23, 0x26, 0x2d));
+    palette.setColor(QPalette::ToolTipText, QColor(0xe3, 0xe6, 0xea));
+    palette.setColor(QPalette::Text, QColor(0xe3, 0xe6, 0xea));
+    palette.setColor(QPalette::Button, QColor(0x23, 0x26, 0x2d));
+    palette.setColor(QPalette::ButtonText, QColor(0xe3, 0xe6, 0xea));
+    palette.setColor(QPalette::BrightText, QColor(0xff, 0x6b, 0x6b));
+    palette.setColor(QPalette::Link, QColor(0x8a, 0xb4, 0xf8));
+    palette.setColor(QPalette::Highlight, QColor(0x2a, 0x5d, 0x9f));
+    palette.setColor(QPalette::HighlightedText, QColor(0xff, 0xff, 0xff));
+    palette.setColor(QPalette::PlaceholderText, QColor(0x7c, 0x84, 0x90));
+    palette.setColor(QPalette::Disabled, QPalette::Text, QColor(0x6b, 0x72, 0x7c));
+    palette.setColor(QPalette::Disabled, QPalette::ButtonText, QColor(0x6b, 0x72, 0x7c));
+    palette.setColor(QPalette::Disabled, QPalette::WindowText, QColor(0x6b, 0x72, 0x7c));
+    qApp->setPalette(palette);
+
     qApp->setStyleSheet(R"(
-QMainWindow, QDialog { background: #1b1e24; }
+QMainWindow, QDialog, QMessageBox { background: #1b1e24; }
 QWidget { color: #e3e6ea; font-size: 13px; }
 QMenuBar { background: #23262d; border-bottom: 1px solid #33383f; }
 QMenuBar::item { padding: 5px 10px; background: transparent; }
@@ -107,17 +138,42 @@ QMenu { background: #23262d; border: 1px solid #33383f; padding: 4px; }
 QMenu::item { padding: 6px 22px; border-radius: 4px; }
 QMenu::item:selected { background: #2a5d9f; }
 QMenu::separator { height: 1px; background: #33383f; margin: 4px 8px; }
+QToolBar { background: #23262d; border-bottom: 1px solid #33383f; spacing: 4px; padding: 3px 6px; }
+QToolBar QToolButton { padding: 4px 8px; border-radius: 4px; color: #e3e6ea; }
+QToolBar QToolButton:hover { background: #2f353e; }
+QToolBar QToolButton:checked { background: #2a5d9f; }
+QToolBar QToolButton:disabled { color: #6b727c; }
+QToolBar::separator { width: 1px; background: #33383f; margin: 4px 6px; }
+QTabWidget::pane { border: 1px solid #2c313a; background: #1b1e24; }
+QTabBar::tab { background: #23262d; color: #b0bec5; padding: 6px 16px; border: 1px solid #2c313a;
+               border-bottom: 0; border-top-left-radius: 5px; border-top-right-radius: 5px;
+               margin-right: 2px; }
+QTabBar::tab:selected { background: #2a5d9f; color: #ffffff; }
+QTabBar::tab:hover { background: #2f353e; }
+QTabBar::tab:selected:hover { background: #356bb5; }
 QDockWidget { color: #cfd8dc; titlebar-close-icon: none; titlebar-normal-icon: none; }
 QDockWidget::title { background: #23262d; padding: 6px 10px; border: 1px solid #2c313a; }
-QTableWidget { background: #171a20; alternate-background-color: #1b1f26; gridline-color: #262b34;
-               selection-background-color: #2a5d9f; selection-color: #ffffff; border: 1px solid #2c313a; }
+QTableWidget, QTableView { background: #171a20; alternate-background-color: #1f232a;
+               gridline-color: #262b34; selection-background-color: #2a5d9f;
+               selection-color: #ffffff; border: 1px solid #2c313a; }
 QHeaderView::section { background: #242a33; color: #cfd8dc; padding: 6px; border: 0;
                        border-right: 1px solid #2c313a; border-bottom: 1px solid #2c313a; }
-QLineEdit, QPlainTextEdit, QTextBrowser, QTreeWidget { background: #171a20; border: 1px solid #2c313a;
-                       border-radius: 4px; selection-background-color: #2a5d9f; }
+QLineEdit, QPlainTextEdit, QTextBrowser, QTextEdit, QTreeWidget, QTreeView, QListWidget {
+                       background: #171a20; alternate-background-color: #1f232a;
+                       border: 1px solid #2c313a; border-radius: 4px;
+                       selection-background-color: #2a5d9f; selection-color: #ffffff; }
 QLineEdit { padding: 6px 8px; }
-QTreeWidget::item { padding: 3px 2px; }
-QTreeWidget::item:selected { background: #2a5d9f; }
+QTreeWidget::item, QTreeView::item { padding: 3px 2px; }
+QTreeWidget::item:alternate, QTreeView::item:alternate { background: #1f232a; }
+QTreeWidget::item:hover, QTreeView::item:hover { background: #262c35; }
+QTreeWidget::item:selected, QTreeView::item:selected { background: #2a5d9f; color: #ffffff; }
+QCheckBox { spacing: 6px; }
+QCheckBox::indicator { width: 14px; height: 14px; border: 1px solid #3a414b; border-radius: 3px;
+                       background: #171a20; }
+QCheckBox::indicator:checked { background: #2a5d9f; border-color: #4c86d9; }
+QPushButton { background: #262c35; border: 1px solid #3a414b; border-radius: 4px; padding: 5px 12px; }
+QPushButton:hover { background: #2f353e; }
+QPushButton:pressed { background: #2a5d9f; }
 QStatusBar { background: #23262d; color: #9aa0a6; }
 QSplitter::handle { background: #2c313a; }
 QScrollBar:vertical { background: #171a20; width: 12px; margin: 0; }
@@ -125,6 +181,7 @@ QScrollBar::handle:vertical { background: #3a414b; border-radius: 6px; min-heigh
 QScrollBar:horizontal { background: #171a20; height: 12px; }
 QScrollBar::handle:horizontal { background: #3a414b; border-radius: 6px; min-width: 24px; }
 QScrollBar::add-line, QScrollBar::sub-line { height: 0; width: 0; }
+QScrollBar::corner, QScrollArea::corner { background: #171a20; }
 QToolTip { background: #23262d; color: #e3e6ea; border: 1px solid #3a414b; padding: 4px; }
 )");
 }
@@ -156,6 +213,41 @@ void MainWindow::createActions() {
     summaryAction_ = new QAction(tr("Document s&ummary"), this);
     connect(summaryAction_, &QAction::triggered, this, &MainWindow::showDocumentSummary);
 
+    svgAction_ = new QAction(tr("Export board as S&VG…"), this);
+    connect(svgAction_, &QAction::triggered, this, &MainWindow::exportSvg);
+
+    zoomInAction_ = new QAction(tr("Zoom &in"), this);
+    zoomInAction_->setShortcut(QKeySequence::ZoomIn);
+    connect(zoomInAction_, &QAction::triggered, this, [this]() {
+        if (boardView_ != nullptr) boardView_->zoomIn();
+    });
+
+    zoomOutAction_ = new QAction(tr("Zoom &out"), this);
+    zoomOutAction_->setShortcut(QKeySequence::ZoomOut);
+    connect(zoomOutAction_, &QAction::triggered, this, [this]() {
+        if (boardView_ != nullptr) boardView_->zoomOut();
+    });
+
+    fitAction_ = new QAction(tr("&Fit board to window"), this);
+    fitAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+0")));
+    connect(fitAction_, &QAction::triggered, this, [this]() {
+        if (boardView_ != nullptr) boardView_->fitToWindow();
+    });
+
+    auto makeLayerAction = [this](const QString& text, bool checked) {
+        auto* action = new QAction(text, this);
+        action->setCheckable(true);
+        action->setChecked(checked);
+        connect(action, &QAction::toggled, this, &MainWindow::updateBoardOptions);
+        return action;
+    };
+    topLayerAction_ = makeLayerAction(tr("Top copper"), true);
+    bottomLayerAction_ = makeLayerAction(tr("Bottom copper"), true);
+    silkAction_ = makeLayerAction(tr("Silkscreen"), true);
+    padsAction_ = makeLayerAction(tr("Pads"), true);
+    designatorsAction_ = makeLayerAction(tr("Designators"), true);
+    mechanicalAction_ = makeLayerAction(tr("Mechanical / keep-out"), false);
+
     exitAction_ = new QAction(tr("E&xit"), this);
     exitAction_->setShortcut(QKeySequence::Quit);
     connect(exitAction_, &QAction::triggered, this, &QWidget::close);
@@ -168,6 +260,7 @@ void MainWindow::createMenus() {
     fileMenu->addAction(csvAction_);
     fileMenu->addAction(jsonAction_);
     fileMenu->addAction(htmlAction_);
+    fileMenu->addAction(svgAction_);
     fileMenu->addSeparator();
     fileMenu->addAction(copyAction_);
     fileMenu->addSeparator();
@@ -179,6 +272,20 @@ void MainWindow::createMenus() {
     if (logDock_) viewMenu->addAction(logDock_->toggleViewAction());
     viewMenu->addSeparator();
     viewMenu->addAction(summaryAction_);
+
+    QMenu* boardMenu = menuBar()->addMenu(tr("&Board"));
+    boardMenu->addAction(zoomInAction_);
+    boardMenu->addAction(zoomOutAction_);
+    boardMenu->addAction(fitAction_);
+    boardMenu->addSeparator();
+    boardMenu->addAction(topLayerAction_);
+    boardMenu->addAction(bottomLayerAction_);
+    boardMenu->addAction(silkAction_);
+    boardMenu->addAction(padsAction_);
+    boardMenu->addAction(designatorsAction_);
+    boardMenu->addAction(mechanicalAction_);
+    boardMenu->addSeparator();
+    boardMenu->addAction(svgAction_);
 
     QMenu* helpMenu = menuBar()->addMenu(tr("&Help"));
     QAction* aboutAction = helpMenu->addAction(tr("&About"));
@@ -221,25 +328,29 @@ void MainWindow::createMenus() {
 // ---------------------------------------------------------------------------
 
 void MainWindow::createComponentTable() {
-    QWidget* central = new QWidget(this);
-    QVBoxLayout* layout = new QVBoxLayout(central);
+    tabs_ = new QTabWidget(this);
+    tabs_->setDocumentMode(true);
+
+    // --- tab 1: component table ---------------------------------------------
+    QWidget* componentPage = new QWidget(tabs_);
+    QVBoxLayout* layout = new QVBoxLayout(componentPage);
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(6);
 
     QHBoxLayout* filterRow = new QHBoxLayout();
-    QLabel* filterLabel = new QLabel(tr("Filter:"), central);
-    filterEdit_ = new QLineEdit(central);
+    QLabel* filterLabel = new QLabel(tr("Filter:"), componentPage);
+    filterEdit_ = new QLineEdit(componentPage);
     filterEdit_->setPlaceholderText(
         tr("Type a designator, value, footprint, manufacturer … (case-insensitive)"));
     filterEdit_->setClearButtonEnabled(true);
-    tableInfoLabel_ = new QLabel(tr("no document"), central);
+    tableInfoLabel_ = new QLabel(tr("no document"), componentPage);
     tableInfoLabel_->setStyleSheet("color:#9aa0a6;");
     filterRow->addWidget(filterLabel);
     filterRow->addWidget(filterEdit_, 1);
     filterRow->addWidget(tableInfoLabel_);
     layout->addLayout(filterRow);
 
-    table_ = new QTableWidget(0, 10, central);
+    table_ = new QTableWidget(0, 10, componentPage);
     table_->setHorizontalHeaderLabels({tr("#"), tr("Designator"), tr("Comment / Value"),
                                        tr("Footprint"), tr("Manufacturer"), tr("MPN"),
                                        tr("Pins"), tr("Pads"), tr("Layer"), tr("Description")});
@@ -266,7 +377,88 @@ void MainWindow::createComponentTable() {
     connect(filterEdit_, &QLineEdit::textChanged, this, &MainWindow::applyFilter);
 
     layout->addWidget(table_, 1);
-    setCentralWidget(central);
+    tabs_->addTab(componentPage, tr("Components"));
+
+    // --- tab 2: board drawing ------------------------------------------------
+    boardView_ = new BoardView(tabs_);
+    connect(boardView_, &BoardView::componentClicked, this, &MainWindow::selectComponentByIndex);
+    tabs_->addTab(boardView_, tr("Board"));
+
+    setCentralWidget(tabs_);
+}
+
+void MainWindow::createToolBar() {
+    QToolBar* toolbar = addToolBar(tr("Main"));
+    toolbar->setObjectName(QStringLiteral("mainToolBar"));
+    toolbar->setMovable(false);
+    toolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    toolbar->addAction(openAction_);
+    toolbar->addSeparator();
+    toolbar->addAction(zoomOutAction_);
+    toolbar->addAction(zoomInAction_);
+    toolbar->addAction(fitAction_);
+    toolbar->addSeparator();
+    toolbar->addAction(topLayerAction_);
+    toolbar->addAction(bottomLayerAction_);
+    toolbar->addAction(silkAction_);
+    toolbar->addAction(padsAction_);
+    toolbar->addAction(designatorsAction_);
+    toolbar->addSeparator();
+    toolbar->addAction(csvAction_);
+}
+
+void MainWindow::updateBoardOptions() {
+    if (boardView_ == nullptr) return;
+    pcbv::BoardRenderOptions options = boardView_->renderOptions();
+    options.topCopper = topLayerAction_ == nullptr || topLayerAction_->isChecked();
+    options.bottomCopper = bottomLayerAction_ == nullptr || bottomLayerAction_->isChecked();
+    options.silk = silkAction_ == nullptr || silkAction_->isChecked();
+    options.pads = padsAction_ == nullptr || padsAction_->isChecked();
+    options.designators = designatorsAction_ == nullptr || designatorsAction_->isChecked();
+    options.mechanical = mechanicalAction_ != nullptr && mechanicalAction_->isChecked();
+    boardView_->setRenderOptions(options);
+}
+
+void MainWindow::exportSvg() {
+    if (!hasDocument_) {
+        ensureDocumentLoaded();
+        return;
+    }
+    if (boardView_ == nullptr || !boardView_->hasGeometry()) {
+        QMessageBox::information(this, tr("Nothing to draw"),
+                                 tr("This document has no PCB geometry to export."));
+        return;
+    }
+    const QString suggested = exportDirectory() + "/" +
+                              QFileInfo(qs(document_.fileName)).completeBaseName() + ".svg";
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export board drawing"), suggested,
+        tr("SVG image (*.svg);;All files (*)"));
+    if (path.isEmpty()) return;
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QMessageBox::warning(this, tr("Export failed"), tr("Cannot write:\n%1").arg(path));
+        return;
+    }
+    const pcbv::BoardRenderOptions options =
+        boardView_ != nullptr ? boardView_->renderOptions() : pcbv::BoardRenderOptions();
+    file.write(QByteArray::fromStdString(pcbv::toSvg(document_, options)));
+    file.close();
+    log(tr("Exported board SVG: %1").arg(path));
+    statusBar()->showMessage(tr("Exported %1").arg(path), 6000);
+}
+
+void MainWindow::selectComponentByIndex(int index) {
+    if (table_ == nullptr) return;
+    for (int row = 0; row < table_->rowCount(); ++row) {
+        const QTableWidgetItem* item = table_->item(row, 0);
+        if (item != nullptr && item->data(Qt::UserRole + 1).toInt() == index) {
+            table_->selectRow(row);
+            table_->scrollToItem(item);
+            return;
+        }
+    }
 }
 
 void MainWindow::createDockPanels() {
@@ -371,6 +563,15 @@ void MainWindow::setDocument(const pcbv::Document& document) {
     populateComponents();
     populateStructure();
     showDocumentSummary();
+
+    if (boardView_ != nullptr) {
+        boardView_->setDocument(document_);
+        updateBoardOptions();
+        if (tabs_ != nullptr) {
+            tabs_->setTabText(1, document_.geometry.empty() ? tr("Board (empty)") : tr("Board"));
+            tabs_->setCurrentIndex(document_.geometry.empty() ? 0 : 1);
+        }
+    }
 
     log(tr("Opened %1  (%2)").arg(qs(document_.fileName), qs(pcbv::docTypeName(document_.type))));
     log(tr("Container: %1").arg(qs(pcbv::containerName(document_.container))));
@@ -531,6 +732,7 @@ void MainWindow::showSelectedComponent() {
     if (index < 0 || index >= static_cast<int>(document_.components.size())) return;
     detailsView_->setHtml(
         componentDetailsHtml(document_.components[static_cast<std::size_t>(index)]));
+    if (boardView_ != nullptr) boardView_->setSelectedComponent(index);
 }
 
 QString MainWindow::componentDetailsHtml(const pcbv::Component& c) const {

@@ -19,6 +19,21 @@ std::string toJson(const Document& doc);
 /// Self contained HTML report (open in any browser / print to PDF).
 std::string toHtml(const Document& doc);
 
+/// Which layers the board drawing includes.
+struct BoardRenderOptions {
+    bool topCopper = true;
+    bool midCopper = true;
+    bool bottomCopper = true;
+    bool silk = true;
+    bool pads = true;
+    bool designators = true;
+    bool mechanical = false;  ///< mechanical / keep-out / unknown layers
+    bool miscLayers = false; ///< solder mask, paste, drill
+};
+
+/// Standalone SVG drawing of the PCB geometry (empty string for schematics).
+std::string toSvg(const Document& doc, const BoardRenderOptions& options = BoardRenderOptions());
+
 /// Formatting helpers shared with the GUI.
 std::string formatMil(double mil);        ///< "1234.56" (mil)
 std::string formatMm(double mil);         ///< "31.357" (mm)

@@ -10,7 +10,7 @@ int main(int argc, char* argv[]) {
     app.setApplicationName("PCB Viewer");
     app.setApplicationDisplayName("PCB Viewer");
     app.setOrganizationName("pcbv");
-    app.setApplicationVersion("0.2.0");
+    app.setApplicationVersion("0.3.0");
 
     MainWindow window;
     window.show();

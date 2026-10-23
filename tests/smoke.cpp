@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "core/AltiumParser.h"
+#include "core/BoardRender.h"
 #include "core/Export.h"
 
 namespace {
@@ -65,6 +66,11 @@ void selfTest() {
             check(r1.pads.size() == 1 && r1.pads.front().net == "GND", "ASCII pad net resolved");
         }
         check(ascii.document.pcb.tracks == 1, "ASCII track counted");
+        check(ascii.document.geometry.tracks.size() == 1, "ASCII track kept as geometry");
+        check(ascii.document.geometry.pads.size() == 1, "ASCII pad kept as geometry");
+        const std::string svg = pcbv::toSvg(ascii.document);
+        check(svg.find("<svg") != std::string::npos, "SVG drawing produced for an ASCII board");
+        check(svg.find("<line") != std::string::npos, "SVG contains the track");
         std::remove(pcbPath.c_str());
 
         const std::string schPath = "/tmp/pcbv-smoke-ascii.SchDoc";
@@ -179,6 +185,28 @@ void verifyDocument(const std::string& path) {
     check(!pcbv::toCsv(doc).empty(), "CSV export produced output");
     check(!pcbv::toJson(doc).empty(), "JSON export produced output");
     check(!pcbv::toHtml(doc).empty(), "HTML export produced output");
+
+    if (doc.type == pcbv::DocType::PcbDoc) {
+        // The board drawing must contain every primitive we parsed.
+        std::printf("  geometry: %zu tracks, %zu pads, %zu vias, %zu arcs, %zu regions\n",
+                    doc.geometry.tracks.size(), doc.geometry.pads.size(),
+                    doc.geometry.vias.size(), doc.geometry.arcs.size(),
+                    doc.geometry.regions.size());
+        check(doc.geometry.tracks.size() == static_cast<std::size_t>(doc.pcb.tracks),
+              "every track reaches the drawing");
+        check(doc.geometry.pads.size() == static_cast<std::size_t>(doc.pcb.pads),
+              "every pad reaches the drawing");
+        check(doc.geometry.vias.size() == static_cast<std::size_t>(doc.pcb.vias),
+              "every via reaches the drawing");
+        const pcbv::BoardRenderList render = pcbv::buildBoardRender(doc, pcbv::BoardRenderOptions());
+        check(!render.empty(), "board display list is not empty");
+        check(render.width > 0.0 && render.height > 0.0, "display list has a size");
+        const std::string svg = pcbv::toSvg(doc);
+        check(svg.find("<svg") != std::string::npos && svg.size() > 200,
+              "SVG export produced a drawing");
+    } else {
+        check(pcbv::toSvg(doc).empty(), "schematic has no board drawing");
+    }
 }
 
 } // namespace

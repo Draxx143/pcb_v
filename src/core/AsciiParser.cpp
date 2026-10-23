@@ -32,6 +32,29 @@ std::string prettyLayer(const std::string& raw) {
 }
 
 /// Reads the vertex list of an ASCII polygon/region: |MAINCONTOURVERTEXCOUNT=n|VX0=..|VY0=..|...
+/// Collects the vertex list Altium writes as VX0/VY0, VX1/VY1, ...
+std::vector<Point> outlinePoints(const std::vector<Property>& props) {
+    std::vector<Point> points;
+    // Region records may carry several contours (a pour plus its holes). Only the
+    // first MAINCONTOURVERTEXCOUNT vertices describe the outer shape.
+    int limit = 4096;
+    const Property* mainCount = text::find(props, "MAINCONTOURVERTEXCOUNT");
+    if (mainCount != nullptr) {
+        const int value = parseInt(mainCount->value, 0);
+        if (value > 0) limit = value;
+    }
+    for (int i = 0; i < limit; ++i) {
+        const Property* x = text::find(props, "VX" + std::to_string(i));
+        if (x == nullptr) break;
+        const Property* y = text::find(props, "VY" + std::to_string(i));
+        Point point;
+        point.x = parseMil(x->value);
+        point.y = y != nullptr ? parseMil(y->value) : 0.0;
+        points.push_back(point);
+    }
+    return points;
+}
+
 void addOutlineBounds(const std::vector<Property>& props, Bounds& bounds) {
     for (int i = 0; i < 4096; ++i) {
         const Property* x = text::find(props, "VX" + std::to_string(i));
@@ -153,6 +176,10 @@ void parseAsciiPcb(const std::vector<std::uint8_t>& bytes, Document& document) {
         if (!date.empty() || !time.empty()) document.lastSaved = text::trim(date + " " + time);
         // Board outline (KINDn/VXn/VYn) gives a reliable board extent.
         addOutlineBounds(boardProps, document.bounds);
+        document.geometry.outline = outlinePoints(boardProps);
+        if (document.geometry.outline.size() >= 3) {
+            for (const auto& point : document.geometry.outline) document.bounds.add(point.x, point.y);
+        }
     }
 
     // ---- pads ----
@@ -185,41 +212,95 @@ void parseAsciiPcb(const std::vector<std::uint8_t>& bytes, Document& document) {
         }
         document.bounds.add(pad.x, pad.y);
         ++document.pcb.pads;
+        document.geometry.pads.push_back(pad);
     }
 
-    // ---- remaining primitives: counts and extents ----
+    // ---- remaining primitives: geometry, counts and extents ----
     for (const auto& props : records) {
         const std::string type = valueOf(props, "RECORD");
+        const int layer = text::pcbLayerIdFromName(valueOf(props, "LAYER"));
         if (text::equalsNoCase(type, "Track")) {
             ++document.pcb.tracks;
-            const double x1 = parseMil(valueOf(props, "X1"));
-            const double y1 = parseMil(valueOf(props, "Y1"));
-            const double x2 = parseMil(valueOf(props, "X2"));
-            const double y2 = parseMil(valueOf(props, "Y2"));
-            document.bounds.add(x1, y1);
-            document.bounds.add(x2, y2);
+            TrackFeature track;
+            track.x1 = parseMil(valueOf(props, "X1"));
+            track.y1 = parseMil(valueOf(props, "Y1"));
+            track.x2 = parseMil(valueOf(props, "X2"));
+            track.y2 = parseMil(valueOf(props, "Y2"));
+            track.width = parseMil(valueOf(props, "WIDTH"));
+            track.layer = layer;
+            const auto netIt = netNames.find(parseInt(valueOf(props, "NET"), -1));
+            if (netIt != netNames.end()) track.net = netIt->second;
+            document.bounds.add(track.x1, track.y1);
+            document.bounds.add(track.x2, track.y2);
+            document.geometry.tracks.push_back(track);
         } else if (text::equalsNoCase(type, "Arc")) {
             ++document.pcb.arcs;
-            const double cx = parseMil(valueOf(props, "LOCATION.X"));
-            const double cy = parseMil(valueOf(props, "LOCATION.Y"));
-            const double radius = parseMil(valueOf(props, "RADIUS"));
-            document.bounds.add(cx - radius, cy - radius);
-            document.bounds.add(cx + radius, cy + radius);
+            ArcFeature arc;
+            arc.cx = parseMil(valueOf(props, "LOCATION.X"));
+            arc.cy = parseMil(valueOf(props, "LOCATION.Y"));
+            arc.radius = parseMil(valueOf(props, "RADIUS"));
+            arc.startAngle = text::parseNumber(valueOf(props, "STARTANGLE"));
+            arc.endAngle = text::parseNumber(valueOf(props, "ENDANGLE"));
+            arc.width = parseMil(valueOf(props, "WIDTH"));
+            arc.layer = layer;
+            const double radius = arc.radius;
+            document.bounds.add(arc.cx - radius, arc.cy - radius);
+            document.bounds.add(arc.cx + radius, arc.cy + radius);
+            document.geometry.arcs.push_back(arc);
         } else if (text::equalsNoCase(type, "Via")) {
             ++document.pcb.vias;
-            document.bounds.add(parseMil(valueOf(props, "X")), parseMil(valueOf(props, "Y")));
+            ViaFeature via;
+            via.x = parseMil(valueOf(props, "X"));
+            via.y = parseMil(valueOf(props, "Y"));
+            via.diameter = parseMil(valueOf(props, "DIAMETER"));
+            if (via.diameter <= 0.0) via.diameter = parseMil(valueOf(props, "TOPLAYERSIZE"));
+            via.hole = parseMil(valueOf(props, "HOLESIZE"));
+            const auto netIt = netNames.find(parseInt(valueOf(props, "NET"), -1));
+            if (netIt != netNames.end()) via.net = netIt->second;
+            document.bounds.add(via.x, via.y);
+            document.geometry.vias.push_back(via);
         } else if (text::equalsNoCase(type, "Region")) {
             ++document.pcb.regions;
             addOutlineBounds(props, document.bounds);
+            RegionFeature region;
+            region.outline = outlinePoints(props);
+            region.layer = layer;
+            const auto netIt = netNames.find(parseInt(valueOf(props, "NET"), -1));
+            if (netIt != netNames.end()) region.net = netIt->second;
+            if (region.outline.size() >= 3) document.geometry.regions.push_back(region);
         } else if (text::equalsNoCase(type, "Polygon")) {
             ++document.pcb.polygons;
             addOutlineBounds(props, document.bounds);
+            RegionFeature region;
+            region.outline = outlinePoints(props);
+            region.layer = layer;
+            region.pour = true;
+            if (region.outline.size() >= 3) document.geometry.regions.push_back(region);
         } else if (text::equalsNoCase(type, "Text")) {
             ++document.pcb.texts;
+            TextFeature label;
+            label.x = parseMil(valueOf(props, "X"));
+            label.y = parseMil(valueOf(props, "Y"));
+            label.height = parseMil(valueOf(props, "HEIGHT"));
+            label.rotation = text::parseNumber(valueOf(props, "ROTATION"));
+            label.layer = layer;
+            label.text = valueOf(props, "TEXT");
+            if (label.text.empty()) label.text = valueOf(props, "NAME");
+            // ASCII exports usually only carry the font's "WIDESTRING" here, not the
+            // actual characters, so an empty label is expected and simply not drawn.
+            if (label.height > 0.0) document.geometry.texts.push_back(label);
         } else if (text::equalsNoCase(type, "Fill")) {
             ++document.pcb.fills;
-            document.bounds.add(parseMil(valueOf(props, "X1")), parseMil(valueOf(props, "Y1")));
-            document.bounds.add(parseMil(valueOf(props, "X2")), parseMil(valueOf(props, "Y2")));
+            FillFeature fill;
+            fill.x1 = parseMil(valueOf(props, "X1"));
+            fill.y1 = parseMil(valueOf(props, "Y1"));
+            fill.x2 = parseMil(valueOf(props, "X2"));
+            fill.y2 = parseMil(valueOf(props, "Y2"));
+            fill.rotation = text::parseNumber(valueOf(props, "ROTATION"));
+            fill.layer = layer;
+            document.bounds.add(fill.x1, fill.y1);
+            document.bounds.add(fill.x2, fill.y2);
+            document.geometry.fills.push_back(fill);
         }
     }
 
