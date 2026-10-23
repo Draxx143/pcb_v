@@ -137,8 +137,7 @@ if command -v cmake >/dev/null 2>&1; then
 else
     warn "cmake not found — falling back to a direct g++ build (command line tool only)."
     mkdir -p "$BUILD_DIR" || die "cannot create $BUILD_DIR"
-    g++ -std=c++17 -O2 -Isrc \
-        src/core/CompoundFile.cpp src/core/AltiumParser.cpp src/core/Export.cpp src/cli/main.cpp \
+    g++ -std=c++17 -O2 -Isrc src/core/*.cpp src/cli/main.cpp \
         -o "$BUILD_DIR/pcbv-cli" || die "g++ build failed"
 fi
 
@@ -149,14 +148,35 @@ install_desktop_entry() {
 
     local apps_dir="$HOME/.local/share/applications"
     local bin_dir="$HOME/.local/bin"
-    mkdir -p "$apps_dir" "$bin_dir" || return 0
+    local icon_dir="$HOME/.local/share/icons/hicolor/scalable/apps"
+    mkdir -p "$apps_dir" "$bin_dir" "$icon_dir" || return 0
     ln -sf "$exe" "$bin_dir/pcbv"
+    # Menu icon: the same mark the window uses (a small stylised PCB).
+    cat > "$icon_dir/pcb-viewer.svg" <<'SVG'
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect x="3" y="3" width="58" height="58" rx="10" fill="#12161c" stroke="#2a5d9f" stroke-width="2"/>
+  <g stroke="#e05c5c" stroke-width="3" stroke-linecap="round">
+    <path d="M14 20 H38 V30" fill="none"/>
+    <path d="M14 34 H26" fill="none"/>
+  </g>
+  <g stroke="#4c86d9" stroke-width="3" stroke-linecap="round">
+    <path d="M26 44 H48 V32" fill="none"/>
+  </g>
+  <g fill="#f2e6a8">
+    <circle cx="14" cy="20" r="4.6"/><circle cx="14" cy="34" r="4.6"/>
+    <circle cx="26" cy="44" r="4.6"/><circle cx="48" cy="32" r="4.6"/>
+    <circle cx="38" cy="30" r="3.6"/><circle cx="26" cy="34" r="3.6"/>
+  </g>
+</svg>
+SVG
     cat > "$apps_dir/pcb-viewer.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=PCB Viewer
-Comment=Open Altium .PcbDoc / .SchDoc files and list all components
+Comment=Open Altium .PcbDoc / .SchDoc files, list components and draw the board
 Exec=$exe %f
+Icon=pcb-viewer
 Terminal=false
 Categories=Development;Electronics;Engineering;
 MimeType=application/x-altium-pcbdoc;application/x-altium-schdoc;

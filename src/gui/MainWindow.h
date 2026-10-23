@@ -9,6 +9,7 @@
 class QAction;
 class QDragEnterEvent;
 class QDropEvent;
+class QCloseEvent;
 class QLineEdit;
 class QTableWidget;
 class QTreeWidget;
@@ -35,6 +36,7 @@ public:
 protected:
     void dragEnterEvent(QDragEnterEvent* event) override;
     void dropEvent(QDropEvent* event) override;
+    void closeEvent(QCloseEvent* event) override;
 
 private slots:
     void openFileDialog();
@@ -102,4 +104,6 @@ private:
     QAction* designatorsAction_ = nullptr;
     QAction* mechanicalAction_ = nullptr;
     QAction* exitAction_ = nullptr;
+
+    QString lastDirectory_;
 };

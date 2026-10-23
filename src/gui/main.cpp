@@ -8,10 +8,12 @@
 
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
-    app.setApplicationName("PCB Viewer");
-    app.setApplicationDisplayName("PCB Viewer");
-    app.setOrganizationName("pcbv");
-    app.setApplicationVersion("0.3.0");
+    app.setApplicationName(QStringLiteral("pcb-viewer"));  // settings / config path
+    app.setApplicationDisplayName(QStringLiteral("PCB Viewer"));
+    app.setOrganizationName(QStringLiteral("pcbv"));
+    app.setApplicationVersion(QStringLiteral("0.3.0"));
+    // Wayland/X11 dock icon: matches the .desktop file written by setup_linux.sh.
+    app.setDesktopFileName(QStringLiteral("pcb-viewer"));
     app.setWindowIcon(pcbv::gui::appIcon());
 
     MainWindow window;

@@ -24,7 +24,9 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QCloseEvent>
 #include <QCoreApplication>
+#include <QSettings>
 #include <QPlainTextEdit>
 #include <QPalette>
 #include <QStyleFactory>
@@ -99,6 +101,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         "<p>Every component is listed with its designator, value/comment, footprint, "
         "manufacturer, part number, pins/pads and the complete raw parameter set.</p>"
         "</div>");
+
+    // Window size, dock layout and the last folder are remembered between sessions.
+    QSettings settings;
+    lastDirectory_ = settings.value(QStringLiteral("ui/lastDirectory")).toString();
+    const QByteArray geometry = settings.value(QStringLiteral("ui/geometry")).toByteArray();
+    if (!geometry.isEmpty()) restoreGeometry(geometry);
+    const QByteArray state = settings.value(QStringLiteral("ui/windowState")).toByteArray();
+    if (!state.isEmpty()) restoreState(state);
 }
 
 // ---------------------------------------------------------------------------
@@ -386,10 +396,12 @@ void MainWindow::createComponentTable() {
     filterRow->addWidget(tableInfoLabel_);
     layout->addLayout(filterRow);
 
-    table_ = new QTableWidget(0, 10, componentPage);
-    table_->setHorizontalHeaderLabels({tr("#"), tr("Designator"), tr("Comment / Value"),
-                                       tr("Footprint"), tr("Manufacturer"), tr("MPN"),
-                                       tr("Pins"), tr("Pads"), tr("Layer"), tr("Description")});
+    // No "#" column: the row number is meaningless once the table is sorted, and the
+    // designator already identifies a part.
+    table_ = new QTableWidget(0, 9, componentPage);
+    table_->setHorizontalHeaderLabels({tr("Designator"), tr("Comment / Value"), tr("Footprint"),
+                                       tr("Manufacturer"), tr("MPN"), tr("Pins"), tr("Pads"),
+                                       tr("Layer"), tr("Description")});
     table_->setSelectionBehavior(QAbstractItemView::SelectRows);
     table_->setSelectionMode(QAbstractItemView::SingleSelection);
     table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -400,15 +412,14 @@ void MainWindow::createComponentTable() {
     table_->horizontalHeader()->setHighlightSections(false);
     table_->horizontalHeader()->setSectionResizeMode(QHeaderView::Interactive);
     table_->horizontalHeader()->setStretchLastSection(true);
-    table_->setColumnWidth(0, 46);
-    table_->setColumnWidth(1, 110);
-    table_->setColumnWidth(2, 170);
-    table_->setColumnWidth(3, 240);
+    table_->setColumnWidth(0, 110);
+    table_->setColumnWidth(1, 170);
+    table_->setColumnWidth(2, 240);
+    table_->setColumnWidth(3, 170);
     table_->setColumnWidth(4, 170);
-    table_->setColumnWidth(5, 170);
+    table_->setColumnWidth(5, 60);
     table_->setColumnWidth(6, 60);
-    table_->setColumnWidth(7, 60);
-    table_->setColumnWidth(8, 90);
+    table_->setColumnWidth(7, 90);
     connect(table_, &QTableWidget::itemSelectionChanged, this, &MainWindow::showSelectedComponent);
     connect(filterEdit_, &QLineEdit::textChanged, this, &MainWindow::applyFilter);
 
@@ -540,8 +551,7 @@ void MainWindow::createDockPanels() {
 // ---------------------------------------------------------------------------
 
 void MainWindow::openFileDialog() {
-    const QString startDir =
-        hasDocument_ ? QString::fromStdString(document_.path).section('/', 0, -2) : QString();
+    const QString startDir = lastDirectory_;
     const QString path = QFileDialog::getOpenFileName(
         this, tr("Open Altium document"), startDir,
         tr("Altium documents (*.PcbDoc *.SchDoc *.pcbdoc *.schdoc);;All files (*)"));
@@ -599,6 +609,7 @@ void MainWindow::openDocument(const QString& path) {
 void MainWindow::setDocument(const pcbv::Document& document) {
     document_ = document;
     hasDocument_ = true;
+    lastDirectory_ = QFileInfo(qs(document_.path)).absolutePath();
 
     setWindowTitle(QString("%1 — PCB Viewer").arg(qs(document_.fileName)));
     populateComponents();
@@ -674,27 +685,26 @@ void MainWindow::populateComponents() {
     for (int row = 0; row < static_cast<int>(document_.components.size()); ++row) {
         const pcbv::Component& c = document_.components[static_cast<std::size_t>(row)];
 
-        auto* indexItem = new NumericItem(QString::number(row + 1), row + 1);
-        indexItem->setData(Qt::UserRole + 1, row); // component index
-        table_->setItem(row, 0, indexItem);
-        table_->setItem(row, 1, new QTableWidgetItem(qs(c.designator)));
-        table_->setItem(row, 2, new QTableWidgetItem(qs(c.comment)));
-        table_->setItem(row, 3, new QTableWidgetItem(qs(c.footprint)));
-        table_->setItem(row, 4, new QTableWidgetItem(qs(c.manufacturer)));
-        table_->setItem(row, 5, new QTableWidgetItem(qs(c.partNumber)));
+        auto* designatorItem = new QTableWidgetItem(qs(c.designator));
+        designatorItem->setData(Qt::UserRole + 1, row);  // index into document.components
+        table_->setItem(row, 0, designatorItem);
+        table_->setItem(row, 1, new QTableWidgetItem(qs(c.comment)));
+        table_->setItem(row, 2, new QTableWidgetItem(qs(c.footprint)));
+        table_->setItem(row, 3, new QTableWidgetItem(qs(c.manufacturer)));
+        table_->setItem(row, 4, new QTableWidgetItem(qs(c.partNumber)));
 
         const int pins = c.pinCount > 0 ? c.pinCount : -1;
         const int pads = c.padCount > 0 ? c.padCount : -1;
-        table_->setItem(row, 6, new NumericItem(c.pinCount > 0 ? QString::number(c.pinCount) : QString(), pins));
-        table_->setItem(row, 7, new NumericItem(c.padCount > 0 ? QString::number(c.padCount) : QString(), pads));
-        table_->setItem(row, 8, new QTableWidgetItem(qs(c.layer)));
-        table_->setItem(row, 9, new QTableWidgetItem(qs(c.description)));
+        table_->setItem(row, 5, new NumericItem(c.pinCount > 0 ? QString::number(c.pinCount) : QString(), pins));
+        table_->setItem(row, 6, new NumericItem(c.padCount > 0 ? QString::number(c.padCount) : QString(), pads));
+        table_->setItem(row, 7, new QTableWidgetItem(qs(c.layer)));
+        table_->setItem(row, 8, new QTableWidgetItem(qs(c.description)));
 
         QString tooltip = tr("<b>%1</b><br>%2").arg(qs(c.designator), qs(c.description));
         if (!c.supplierPartNumber.empty())
             tooltip += tr("<br>Supplier P/N: %1").arg(qs(c.supplierPartNumber));
         if (!c.datasheet.empty()) tooltip += tr("<br>%1").arg(qs(c.datasheet));
-        for (int col = 0; col < 10; ++col) {
+        for (int col = 0; col < 9; ++col) {
             if (QTableWidgetItem* item = table_->item(row, col)) item->setToolTip(tooltip);
         }
     }
@@ -764,7 +774,7 @@ void MainWindow::applyFilter(const QString& text) {
     for (int row = 0; row < table_->rowCount(); ++row) {
         bool match = needle.isEmpty();
         if (!match) {
-            for (int col = 1; col < table_->columnCount(); ++col) {
+            for (int col = 0; col < table_->columnCount(); ++col) {
                 const QTableWidgetItem* item = table_->item(row, col);
                 if (item != nullptr && item->text().contains(needle, Qt::CaseInsensitive)) {
                     match = true;
@@ -786,9 +796,9 @@ void MainWindow::showSelectedComponent() {
     if (!hasDocument_ || table_ == nullptr) return;
     const int row = table_->currentRow();
     if (row < 0) return;
-    const QTableWidgetItem* first = table_->item(row, 0);
-    if (first == nullptr) return;
-    const int index = first->data(Qt::UserRole + 1).toInt();
+    const QTableWidgetItem* designatorItem = table_->item(row, 0);
+    if (designatorItem == nullptr) return;
+    const int index = designatorItem->data(Qt::UserRole + 1).toInt();
     if (index < 0 || index >= static_cast<int>(document_.components.size())) return;
     detailsView_->setHtml(
         componentDetailsHtml(document_.components[static_cast<std::size_t>(index)]));
@@ -1048,11 +1058,16 @@ void MainWindow::copyBomToClipboard() {
         ensureDocumentLoaded();
         return;
     }
-    QString text;
+    QStringList header;
+    for (int col = 0; col < table_->columnCount(); ++col) {
+        const QTableWidgetItem* headerItem = table_->horizontalHeaderItem(col);
+        header << (headerItem != nullptr ? headerItem->text() : QString());
+    }
+    QString text = header.join(QStringLiteral("\t")) + QStringLiteral("\n");
     for (int row = 0; row < table_->rowCount(); ++row) {
         if (table_->isRowHidden(row)) continue;
         QStringList fields;
-        for (int col = 1; col < table_->columnCount(); ++col) {
+        for (int col = 0; col < table_->columnCount(); ++col) {
             const QTableWidgetItem* item = table_->item(row, col);
             fields << (item != nullptr ? item->text() : QString());
         }
@@ -1069,6 +1084,14 @@ void MainWindow::copyBomToClipboard() {
 void MainWindow::log(const QString& message) {
     if (logView_ == nullptr) return;
     logView_->appendPlainText(message);
+}
+
+void MainWindow::closeEvent(QCloseEvent* event) {
+    QSettings settings;
+    settings.setValue(QStringLiteral("ui/geometry"), saveGeometry());
+    settings.setValue(QStringLiteral("ui/windowState"), saveState());
+    settings.setValue(QStringLiteral("ui/lastDirectory"), lastDirectory_);
+    QMainWindow::closeEvent(event);
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
