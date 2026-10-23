@@ -31,6 +31,7 @@
 #include <QSignalBlocker>
 #include <QPlainTextEdit>
 #include <QPageLayout>
+#include <QPainter>
 #include <QPrintDialog>
 #include <QPrinter>
 #include <QPushButton>
