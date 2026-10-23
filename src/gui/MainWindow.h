@@ -48,11 +48,14 @@ private slots:
     void exportSvg();
     void exportGroupedBomCsv();
     void exportGroupedBomHtml();
+    void exportNetlistCsv();
     void compareWithFile();
     void updateBoardOptions();
     void applyFilter(const QString& text);
     void applyNetFilter(const QString& text);
     void applyBomFilter(const QString& text);
+    void applyNetlistFilter(const QString& text);
+    void selectNetlistItem();
     void showSelectedComponent();
     void showDocumentSummary();
     void selectComponentByIndex(int index);
@@ -67,6 +70,7 @@ private:
     void applyTheme();
     void populateComponents();
     void populateBom();
+    void populateNetlist();
     void showComparison(const pcbv::CompareResult& result);
     void populateStructure();
     void populateLayers();
@@ -90,6 +94,10 @@ private:
     QTableWidget* table_ = nullptr;
     QTableWidget* bomTable_ = nullptr;
     QLabel* bomInfo_ = nullptr;
+    QWidget* netlistPage_ = nullptr;
+    QTreeWidget* netlistTree_ = nullptr;
+    QLineEdit* netlistFilter_ = nullptr;
+    QLabel* netlistInfo_ = nullptr;
     QTextBrowser* compareView_ = nullptr;
     QLabel* compareHint_ = nullptr;
     QWidget* comparePage_ = nullptr;
@@ -117,6 +125,7 @@ private:
     QAction* summaryAction_ = nullptr;
     QAction* svgAction_ = nullptr;
     QAction* bomCsvAction_ = nullptr;
+    QAction* netlistCsvAction_ = nullptr;
     QAction* bomHtmlAction_ = nullptr;
     QAction* compareAction_ = nullptr;
     QAction* findAction_ = nullptr;

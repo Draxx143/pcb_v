@@ -8,6 +8,7 @@
 //   pcbv-cli --svg  board.svg  board.PcbDoc    export the PCB drawing as SVG
 //   pcbv-cli --nets  board.PcbDoc             net table + copper stackup
 //   pcbv-cli --bom   bom.csv  board.PcbDoc    grouped BOM (one line per unique part)
+//   pcbv-cli --netlist board.PcbDoc           every pad and the net it belongs to
 //   pcbv-cli --compare old.PcbDoc new.PcbDoc  what changed between two revisions
 #include <algorithm>
 #include <cstdio>
@@ -20,6 +21,7 @@
 #include "core/BoardIndex.h"
 #include "core/Bom.h"
 #include "core/Compare.h"
+#include "core/Netlist.h"
 #include "core/Export.h"
 
 namespace {
@@ -36,6 +38,8 @@ void printUsage() {
         "  pcbv-cli --html <out.html> <file>\n"
         "  pcbv-cli --svg  <out.svg>  <file.PcbDoc>  board drawing (2D, scalable)\n"
         "  pcbv-cli --nets  <file.PcbDoc>            net table, track lengths and the stackup\n"
+        "  pcbv-cli --netlist <file.PcbDoc>          connectivity: nets, pads, layers, positions\n"
+        "  pcbv-cli --netlist-csv <out.csv> <file>   the same table as CSV\n"
         "  pcbv-cli --bom   <out.csv>  <file>        grouped BOM (quantity + designators)\n"
         "  pcbv-cli --bom-html <out.html> <file>     grouped BOM as a printable page\n"
         "  pcbv-cli --compare <left> <right>         what was added / removed / changed\n"
@@ -212,11 +216,11 @@ int main(int argc, char** argv) {
     std::string compareLeft;
     std::string compareRight;
 
-    if (mode == "--list" || mode == "--summary" || mode == "--nets") {
+    if (mode == "--list" || mode == "--summary" || mode == "--nets" || mode == "--netlist") {
         if (args.size() < 2) return fail("missing input file");
         inputPath = args[1];
     } else if (mode == "--csv" || mode == "--json" || mode == "--html" || mode == "--svg" ||
-               mode == "--bom" || mode == "--bom-html") {
+               mode == "--bom" || mode == "--bom-html" || mode == "--netlist-csv") {
         if (args.size() < 3) return fail("usage: " + mode + " <output> <input>");
         outputPath = args[1];
         inputPath = args[2];
@@ -316,6 +320,15 @@ int main(int argc, char** argv) {
     }
     if (mode == "--nets") {
         printNets(doc);
+        return 0;
+    }
+    if (mode == "--netlist") {
+        std::cout << pcbv::netlistToText(doc);
+        return 0;
+    }
+    if (mode == "--netlist-csv") {
+        if (!writeFile(outputPath, pcbv::netlistToCsv(doc))) return fail("cannot write " + outputPath);
+        std::cout << "wrote " << outputPath << "\n";
         return 0;
     }
     if (mode == "--details") {

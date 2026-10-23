@@ -57,6 +57,7 @@
 #include "core/AltiumParser.h"
 #include "core/Bom.h"
 #include "core/Export.h"
+#include "core/Netlist.h"
 
 namespace {
 
@@ -245,6 +246,10 @@ void MainWindow::createActions() {
     bomHtmlAction_->setToolTip(tr("Printable grouped BOM for a supplier or a review"));
     connect(bomHtmlAction_, &QAction::triggered, this, &MainWindow::exportGroupedBomHtml);
 
+    netlistCsvAction_ = new QAction(tr("Export &netlist as CSV…"), this);
+    netlistCsvAction_->setToolTip(tr("Every pad with its net, layer and position"));
+    connect(netlistCsvAction_, &QAction::triggered, this, &MainWindow::exportNetlistCsv);
+
     compareAction_ = new QAction(tr("&Compare with another document…"), this);
     compareAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+D")));
     compareAction_->setToolTip(
@@ -296,6 +301,7 @@ void MainWindow::createActions() {
     QMenu* exportMenu = new QMenu(tr("Export"), this);
     exportMenu->addAction(bomCsvAction_);
     exportMenu->addAction(bomHtmlAction_);
+    exportMenu->addAction(netlistCsvAction_);
     exportMenu->addAction(csvAction_);
     exportMenu->addAction(jsonAction_);
     exportMenu->addAction(htmlAction_);
@@ -319,6 +325,7 @@ void MainWindow::createMenus() {
     QMenu* exportMenu = fileMenu->addMenu(tr("&Export"));
     exportMenu->addAction(bomCsvAction_);
     exportMenu->addAction(bomHtmlAction_);
+    exportMenu->addAction(netlistCsvAction_);
     exportMenu->addAction(csvAction_);
     exportMenu->addAction(jsonAction_);
     exportMenu->addAction(htmlAction_);
@@ -483,6 +490,47 @@ void MainWindow::createComponentTable() {
             });
     bomLayout->addWidget(bomTable_, 1);
     tabs_->addTab(bomPage, tr("BOM"));
+
+    // --- tab 3: netlist / connections ----------------------------------------
+    netlistPage_ = new QWidget(tabs_);
+    QVBoxLayout* netlistLayout = new QVBoxLayout(netlistPage_);
+    netlistLayout->setContentsMargins(8, 8, 8, 8);
+    netlistLayout->setSpacing(6);
+
+    QHBoxLayout* netlistFilterRow = new QHBoxLayout();
+    netlistFilter_ = new QLineEdit(netlistPage_);
+    netlistFilter_->setPlaceholderText(tr("Filter by net, designator, pad or layer…"));
+    netlistFilter_->setClearButtonEnabled(true);
+    netlistInfo_ = new QLabel(tr("no document"), netlistPage_);
+    netlistInfo_->setStyleSheet("color:#8a929e;");
+    netlistInfo_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    netlistFilterRow->addWidget(netlistFilter_, 1);
+    netlistFilterRow->addWidget(netlistInfo_);
+    netlistLayout->addLayout(netlistFilterRow);
+
+    netlistTree_ = new QTreeWidget(netlistPage_);
+    netlistTree_->setHeaderLabels({tr("Net / connection"), tr("Layer"), tr("X (mm)"), tr("Y (mm)")});
+    netlistTree_->setRootIsDecorated(true);
+    netlistTree_->setUniformRowHeights(true);
+    netlistTree_->setAlternatingRowColors(true);
+    netlistTree_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    netlistTree_->setColumnWidth(0, 300);
+    netlistTree_->setColumnWidth(1, 150);
+    netlistTree_->setColumnWidth(2, 90);
+    netlistTree_->setColumnWidth(3, 90);
+    connect(netlistTree_, &QTreeWidget::itemSelectionChanged, this,
+            &MainWindow::selectNetlistItem);
+    connect(netlistTree_, &QTreeWidget::itemDoubleClicked, this,
+            [this](QTreeWidgetItem* item, int) {
+                if (item == nullptr || boardView_ == nullptr) return;
+                const QString net = item->data(0, Qt::UserRole).toString();
+                if (!net.isEmpty()) selectNet(net);
+                if (tabs_ != nullptr) tabs_->setCurrentWidget(boardView_);
+            });
+    connect(netlistFilter_, &QLineEdit::textChanged, this, &MainWindow::applyNetlistFilter);
+    netlistLayout->addWidget(netlistTree_, 1);
+    tabs_->addTab(netlistPage_, tr("Netlist"));
+    tabs_->setTabVisible(tabs_->indexOf(netlistPage_), false);
 
     // --- tab 2: board drawing ------------------------------------------------
     // The page is always part of the tab widget and only its tab button is hidden
@@ -740,6 +788,28 @@ void MainWindow::exportGroupedBomHtml() {
     statusBar()->showMessage(tr("Exported %1").arg(path), 6000);
 }
 
+void MainWindow::exportNetlistCsv() {
+    if (!hasDocument_) {
+        ensureDocumentLoaded();
+        return;
+    }
+    const QString suggested =
+        exportDirectory() + "/" + QFileInfo(qs(document_.fileName)).completeBaseName() + "-netlist.csv";
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export netlist"), suggested, tr("CSV file (*.csv);;All files (*)"));
+    if (path.isEmpty()) return;
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QMessageBox::warning(this, tr("Export failed"), tr("Cannot write:\n%1").arg(path));
+        return;
+    }
+    file.write(QByteArray::fromStdString(pcbv::netlistToCsv(document_)));
+    file.close();
+    log(tr("Exported netlist: %1").arg(path));
+    statusBar()->showMessage(tr("Exported %1").arg(path), 6000);
+}
+
 void MainWindow::compareWithFile() {
     if (!hasDocument_) {
         ensureDocumentLoaded();
@@ -891,6 +961,10 @@ void MainWindow::createDockPanels() {
         const QTableWidgetItem* item = netsTable_->item(netsTable_->currentRow(), 0);
         if (item == nullptr) return;
         selectNet(item->data(Qt::UserRole).toString());
+        // Picking a net is a request to look at it, so bring the board forward.
+        if (tabs_ != nullptr && boardView_ != nullptr && boardView_->hasGeometry()) {
+            tabs_->setCurrentWidget(boardView_);
+        }
     });
 
     netsDock_ = new QDockWidget(tr("Nets"), this);
@@ -985,6 +1059,7 @@ void MainWindow::setDocument(const pcbv::Document& document) {
     }
     populateComponents();
     populateBom();
+    populateNetlist();
     populateStructure();
     populateLayers();
     populateNets();
@@ -999,6 +1074,11 @@ void MainWindow::setDocument(const pcbv::Document& document) {
         if (tabs_ != nullptr && boardTab >= 0) {
             tabs_->setTabVisible(boardTab, hasBoard);
             tabs_->setCurrentIndex(hasBoard ? boardTab : 0);
+        }
+        // The connectivity table only makes sense when pads were parsed.
+        if (tabs_ != nullptr && netlistPage_ != nullptr) {
+            const int netlistTab = tabs_->indexOf(netlistPage_);
+            if (netlistTab >= 0) tabs_->setTabVisible(netlistTab, !document_.geometry.pads.empty());
         }
     }
 
@@ -1031,12 +1111,14 @@ void MainWindow::updateActionStates() {
     const bool hasBoard = hasDocument && boardView_ != nullptr && boardView_->hasGeometry();
 
     // Document level commands (BOM, reports, summary).
-    for (QAction* action : {csvAction_, bomCsvAction_, bomHtmlAction_, jsonAction_, htmlAction_,
+    for (QAction* action : {csvAction_, bomCsvAction_, bomHtmlAction_, netlistCsvAction_, jsonAction_,
+                            htmlAction_,
                             exportAction_, copyAction_, summaryAction_, compareAction_}) {
         if (action != nullptr) action->setEnabled(hasDocument);
     }
     // Board level commands only make sense for documents with drawable geometry.
-    for (QAction* action : {svgAction_, fitAction_, zoomInAction_, zoomOutAction_}) {
+    for (QAction* action : {svgAction_, netlistCsvAction_, fitAction_, zoomInAction_,
+                            zoomOutAction_}) {
         if (action != nullptr) action->setEnabled(hasBoard);
     }
     if (netsDock_ != nullptr) netsDock_->setEnabled(hasBoard);
@@ -1151,6 +1233,101 @@ void MainWindow::applyBomFilter(const QString& text) {
     }
 }
 
+void MainWindow::populateNetlist() {
+    if (netlistTree_ == nullptr) return;
+    netlistTree_->clear();
+
+    const std::vector<pcbv::NetConnection> netlist = pcbv::buildNetlist(document_);
+    std::size_t pads = 0;
+    int named = 0;
+    int unconnected = 0;
+    int dangling = 0;
+
+    for (const auto& net : netlist) {
+        pads += net.nodes.size();
+        const bool noNet = net.name == pcbv::noNetName();
+        if (noNet) unconnected = static_cast<int>(net.nodes.size());
+        else ++named;
+        if (!noNet && net.nodes.size() == 1) ++dangling;
+
+        auto* netItem = new QTreeWidgetItem(netlistTree_);
+        netItem->setText(0, QStringLiteral("%1  (%2)").arg(qs(net.name)).arg(net.nodes.size()));
+        netItem->setData(0, Qt::UserRole, qs(net.name));
+        netItem->setData(0, Qt::UserRole + 1, -1);
+        QFont netFont = netItem->font(0);
+        netFont.setBold(true);
+        netItem->setFont(0, netFont);
+        if (!noNet && net.nodes.size() == 1) {
+            netItem->setForeground(0, QColor(0xe5, 0x7c, 0x73));  // a single pad = unfinished
+            netItem->setToolTip(0, tr("Only one pad on this net — the routing looks unfinished."));
+        }
+
+        for (const auto& node : net.nodes) {
+            auto* child = new QTreeWidgetItem(netItem);
+            child->setText(0, qs(node.label));
+            child->setText(1, qs(node.layer));
+            child->setText(2, qs(pcbv::formatMm(node.x)));
+            child->setText(3, qs(pcbv::formatMm(node.y)));
+            child->setTextAlignment(2, Qt::AlignRight | Qt::AlignVCenter);
+            child->setTextAlignment(3, Qt::AlignRight | Qt::AlignVCenter);
+            child->setForeground(2, QColor(0x9a, 0xa0, 0xa6));
+            child->setForeground(3, QColor(0x9a, 0xa0, 0xa6));
+            child->setData(0, Qt::UserRole, qs(net.name));
+            child->setData(0, Qt::UserRole + 1, node.componentIndex);
+        }
+    }
+
+    if (netlistInfo_ != nullptr) {
+        if (pads == 0) {
+            netlistInfo_->setText(tr("no pads"));
+        } else {
+            QString info = tr("%1 nets · %2 pads").arg(named).arg(pads);
+            if (dangling > 0) info += tr(" · %1 single-pad").arg(dangling);
+            if (unconnected > 0) info += tr(" · %1 unconnected").arg(unconnected);
+            netlistInfo_->setText(info);
+        }
+    }
+    applyNetlistFilter(netlistFilter_ != nullptr ? netlistFilter_->text() : QString());
+}
+
+void MainWindow::applyNetlistFilter(const QString& text) {
+    if (netlistTree_ == nullptr) return;
+    const QString needle = text.trimmed();
+
+    for (int i = 0; i < netlistTree_->topLevelItemCount(); ++i) {
+        QTreeWidgetItem* netItem = netlistTree_->topLevelItem(i);
+        const bool netMatches = needle.isEmpty() ||
+                                netItem->text(0).contains(needle, Qt::CaseInsensitive);
+        int visibleChildren = 0;
+        for (int child = 0; child < netItem->childCount(); ++child) {
+            QTreeWidgetItem* node = netItem->child(child);
+            bool match = netMatches;
+            for (int column = 0; column < 2 && !match; ++column) {
+                if (node->text(column).contains(needle, Qt::CaseInsensitive)) match = true;
+            }
+            node->setHidden(!match);
+            if (match) ++visibleChildren;
+        }
+        netItem->setHidden(visibleChildren == 0 && !netMatches);
+        if (!needle.isEmpty()) netItem->setExpanded(visibleChildren > 0);
+    }
+}
+
+void MainWindow::selectNetlistItem() {
+    if (netlistTree_ == nullptr) return;
+    const QList<QTreeWidgetItem*> items = netlistTree_->selectedItems();
+    if (items.isEmpty()) return;
+    QTreeWidgetItem* item = items.first();
+
+    const QString net = item->data(0, Qt::UserRole).toString();
+    if (!net.isEmpty() && net != pcbv::noNetName() && boardView_ != nullptr) {
+        boardView_->setHighlightNet(net);
+        highlightNetRow(net);
+    }
+    const int componentIndex = item->data(0, Qt::UserRole + 1).toInt();
+    if (componentIndex >= 0) selectComponentByIndex(componentIndex);
+}
+
 void MainWindow::populateStructure() {
     structureTree_->clear();
 
@@ -1248,9 +1425,6 @@ void MainWindow::selectNet(const QString& net) {
     }
 
     highlightNetRow(net);
-    if (tabs_ != nullptr && boardView_ != nullptr) {
-        tabs_->setCurrentWidget(boardView_);
-    }
     for (const auto& summary : document_.netSummaries) {
         if (qs(summary.name) == net) {
             detailsView_->setHtml(netDetailsHtml(summary));

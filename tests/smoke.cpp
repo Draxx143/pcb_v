@@ -14,6 +14,7 @@
 #include "core/BoardIndex.h"
 #include "core/Bom.h"
 #include "core/Compare.h"
+#include "core/Netlist.h"
 #include "core/Export.h"
 
 namespace {
@@ -71,6 +72,21 @@ void selfTest() {
         check(ascii.document.pcb.tracks == 1, "ASCII track counted");
         check(ascii.document.geometry.tracks.size() == 1, "ASCII track kept as geometry");
         check(ascii.document.geometry.pads.size() == 1, "ASCII pad kept as geometry");
+        // --- netlist / connectivity ---------------------------------------------
+        const std::vector<pcbv::NetConnection> netlist =
+            pcbv::buildNetlist(ascii.document);
+        check(netlist.size() == 1, "netlist groups the pads by net");
+        if (!netlist.empty()) {
+            check(netlist.front().name == "GND", "netlist keeps the net name");
+            check(netlist.front().nodes.size() == 1, "netlist lists the connected pad");
+            check(netlist.front().nodes.front().label == "R1-1", "netlist labels designator-pad");
+        }
+        check(pcbv::danglingNetCount(netlist) == 1, "a single-pad net is reported as dangling");
+        check(pcbv::netlistToCsv(ascii.document).find("GND,R1,1,R1-1") != std::string::npos,
+              "netlist CSV carries net, part, pad and label");
+        check(pcbv::netlistToText(ascii.document).find("GND") != std::string::npos,
+              "netlist text lists the net");
+
         // The net/layer index that feeds the Nets and Layers panels.
         check(ascii.document.netSummaries.size() == 1, "net index has one net");
         if (!ascii.document.netSummaries.empty()) {
@@ -324,6 +340,11 @@ void verifyDocument(const std::string& path) {
             indexedPads += static_cast<std::size_t>(net.pads);
         }
         check(indexedPads == padsWithNet, "every pad with a net is indexed once");
+
+        std::size_t netlistPads = 0;
+        for (const auto& net : pcbv::buildNetlist(doc)) netlistPads += net.nodes.size();
+        check(netlistPads == doc.geometry.pads.size(),
+              "the netlist contains every pad exactly once");
         if (!doc.netSummaries.empty()) {
             std::printf("  nets: %zu, layers: %zu, stackup: %s\n", doc.netSummaries.size(),
                         doc.layerUsage.size(), pcbv::copperStackup(doc).c_str());
