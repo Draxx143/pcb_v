@@ -140,7 +140,7 @@ void MainWindow::createActions() {
     connect(openAction_, &QAction::triggered, this, &MainWindow::openFileDialog);
 
     csvAction_ = new QAction(tr("Export BOM as &CSV…"), this);
-    csvAction_->setShortcut(QKeySequence("Ctrl+Shift+C"));
+    csvAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+C")));
     connect(csvAction_, &QAction::triggered, this, &MainWindow::exportCsv);
 
     jsonAction_ = new QAction(tr("Export as &JSON…"), this);
@@ -211,7 +211,7 @@ void MainWindow::createMenus() {
     });
 
     QAction* refreshAction = new QAction(this);
-    refreshAction->setShortcut(QKeySequence(Qt::Key_F5));
+    refreshAction->setShortcut(QKeySequence(QStringLiteral("F5")));
     addAction(refreshAction);
     connect(refreshAction, &QAction::triggered, this, &MainWindow::showDocumentSummary);
 }
@@ -751,7 +751,7 @@ void MainWindow::copyBomToClipboard() {
             const QTableWidgetItem* item = table_->item(row, col);
             fields << (item != nullptr ? item->text() : QString());
         }
-        text += fields.join('\t') + '\n';
+        text += fields.join(QStringLiteral("\t")) + QStringLiteral("\n");
     }
     QApplication::clipboard()->setText(text);
     statusBar()->showMessage(tr("Copied the visible component table to the clipboard"), 5000);
