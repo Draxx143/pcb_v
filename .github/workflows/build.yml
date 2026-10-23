@@ -23,6 +23,11 @@ jobs:
       - name: Build
         run: cmake --build build --parallel "$(nproc)"
 
+      - name: Verify the Qt6 GUI target was built
+        run: |
+          test -x ./build/pcbv-gui || { echo "pcbv-gui was not built — Qt6 missing?"; exit 1; }
+          ls -la ./build/pcbv-gui ./build/pcbv-cli
+
       - name: Run tests
         run: ctest --test-dir build --output-on-failure
 
