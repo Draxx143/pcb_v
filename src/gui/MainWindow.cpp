@@ -6,6 +6,7 @@
 #include <QByteArray>
 #include <QClipboard>
 #include <QColor>
+#include <QDateTime>
 #include <QDir>
 #include <QDockWidget>
 #include <QDragEnterEvent>
@@ -29,6 +30,9 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QPlainTextEdit>
+#include <QPageLayout>
+#include <QPrintDialog>
+#include <QPrinter>
 #include <QPushButton>
 #include <QPalette>
 #include <QStyleFactory>
@@ -48,7 +52,9 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <algorithm>
 #include <cstdint>
+#include <map>
 #include <set>
 
 #include "BoardView.h"
@@ -246,9 +252,30 @@ void MainWindow::createActions() {
     bomHtmlAction_->setToolTip(tr("Printable grouped BOM for a supplier or a review"));
     connect(bomHtmlAction_, &QAction::triggered, this, &MainWindow::exportGroupedBomHtml);
 
+    measureAction_ = new QAction(pcbv::gui::measureIcon(), tr("&Measure"), this);
+    measureAction_->setCheckable(true);
+    measureAction_->setShortcut(QKeySequence(QStringLiteral("M")));
+    measureAction_->setToolTip(tr("Measure between two points, snapping to pads, vias and track "
+                                  "ends  (M)"));
+    connect(measureAction_, &QAction::toggled, this, [this](bool on) {
+        if (boardView_ != nullptr) boardView_->setMeasureMode(on);
+        if (on) statusBar()->showMessage(tr("Measure: click two points, Esc to finish"), 6000);
+    });
+
+    zoomPartAction_ = new QAction(tr("Zoom to selected &part"), this);
+    zoomPartAction_->setShortcut(QKeySequence(QStringLiteral("Z")));
+    zoomPartAction_->setToolTip(tr("Frame the part selected in the table  (Z)"));
+    connect(zoomPartAction_, &QAction::triggered, this, &MainWindow::zoomToSelectedPart);
+
     netlistCsvAction_ = new QAction(tr("Export &netlist as CSV…"), this);
     netlistCsvAction_->setToolTip(tr("Every pad with its net, layer and position"));
     connect(netlistCsvAction_, &QAction::triggered, this, &MainWindow::exportNetlistCsv);
+
+    printAction_ = new QAction(pcbv::gui::printIcon(), tr("&Print board (1:1)…"), this);
+    printAction_->setShortcut(QKeySequence::Print);
+    printAction_->setToolTip(tr("Print the board at its real size, or scaled to fit the page  "
+                                "(Ctrl+P)"));
+    connect(printAction_, &QAction::triggered, this, &MainWindow::printBoard);
 
     compareAction_ = new QAction(tr("&Compare with another document…"), this);
     compareAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+D")));
@@ -320,6 +347,7 @@ void MainWindow::createMenus() {
     // File: open, one export submenu, quit.
     QMenu* fileMenu = menuBar()->addMenu(tr("&File"));
     fileMenu->addAction(openAction_);
+    fileMenu->addAction(printAction_);
     fileMenu->addAction(compareAction_);
     fileMenu->addSeparator();
     QMenu* exportMenu = fileMenu->addMenu(tr("&Export"));
@@ -352,10 +380,10 @@ void MainWindow::createMenus() {
     if (structureDock_) panelsMenu->addAction(structureDock_->toggleViewAction());
     if (detailsDock_) panelsMenu->addAction(detailsDock_->toggleViewAction());
     if (layersDock_) panelsMenu->addAction(layersDock_->toggleViewAction());
-    if (netsDock_) panelsMenu->addAction(netsDock_->toggleViewAction());
     if (logDock_) panelsMenu->addAction(logDock_->toggleViewAction());
     viewMenu->addSeparator();
     viewMenu->addAction(fitAction_);
+    viewMenu->addAction(zoomPartAction_);
     viewMenu->addSeparator();
     viewMenu->addAction(summaryAction_);
 
@@ -371,6 +399,9 @@ void MainWindow::createMenus() {
                                     "<tr><td><b>Ctrl+Shift+C</b></td><td>export the BOM as CSV</td></tr>"
                                     "<tr><td><b>Ctrl++ / Ctrl+-</b></td><td>zoom the board</td></tr>"
                                     "<tr><td><b>Ctrl+0</b></td><td>fit the board in the window</td></tr>"
+                                    "<tr><td><b>M</b></td><td>measure between two points</td></tr>"
+                                    "<tr><td><b>Z</b></td><td>zoom to the selected part</td></tr>"
+                                    "<tr><td><b>Ctrl+P</b></td><td>print the board at 1:1</td></tr>"
                                     "<tr><td><b>Click a track or pad</b></td><td>highlight that net</td></tr>"
                                     "<tr><td><b>Esc</b></td><td>clear the net highlight</td></tr>"
                                     "<tr><td><b>Ctrl+Shift+D</b></td><td>compare with another document</td></tr>"
@@ -509,15 +540,20 @@ void MainWindow::createComponentTable() {
     netlistLayout->addLayout(netlistFilterRow);
 
     netlistTree_ = new QTreeWidget(netlistPage_);
-    netlistTree_->setHeaderLabels({tr("Net / connection"), tr("Layer"), tr("X (mm)"), tr("Y (mm)")});
+    netlistTree_->setHeaderLabels({tr("Net / connection"), tr("Pads"), tr("Tracks"), tr("Vias"),
+                                   tr("Length (mm)"), tr("Layer"), tr("X (mm)"), tr("Y (mm)")});
     netlistTree_->setRootIsDecorated(true);
     netlistTree_->setUniformRowHeights(true);
     netlistTree_->setAlternatingRowColors(true);
     netlistTree_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    netlistTree_->setColumnWidth(0, 300);
-    netlistTree_->setColumnWidth(1, 150);
-    netlistTree_->setColumnWidth(2, 90);
-    netlistTree_->setColumnWidth(3, 90);
+    netlistTree_->setColumnWidth(0, 250);
+    netlistTree_->setColumnWidth(1, 55);
+    netlistTree_->setColumnWidth(2, 60);
+    netlistTree_->setColumnWidth(3, 50);
+    netlistTree_->setColumnWidth(4, 95);
+    netlistTree_->setColumnWidth(5, 140);
+    netlistTree_->setColumnWidth(6, 80);
+    netlistTree_->setColumnWidth(7, 80);
     connect(netlistTree_, &QTreeWidget::itemSelectionChanged, this,
             &MainWindow::selectNetlistItem);
     connect(netlistTree_, &QTreeWidget::itemDoubleClicked, this,
@@ -539,6 +575,24 @@ void MainWindow::createComponentTable() {
     boardView_ = new BoardView(tabs_);
     connect(boardView_, &BoardView::componentClicked, this, &MainWindow::selectComponentByIndex);
     connect(boardView_, &BoardView::netClicked, this, &MainWindow::selectNet);
+    connect(boardView_, &BoardView::measureChanged, this, [this](const QString& text) {
+        if (text.isEmpty()) {
+            statusBar()->clearMessage();
+        } else {
+            statusBar()->showMessage(tr("Measure: %1").arg(text));
+        }
+    });
+    connect(table_, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
+        if (table_ == nullptr || boardView_ == nullptr || !boardView_->hasGeometry()) return;
+        const QTableWidgetItem* item = table_->item(row, 0);
+        if (item == nullptr) return;
+        const int index = item->data(Qt::UserRole + 1).toInt();
+        if (index < 0) return;
+        boardView_->setSelectedComponent(index);
+        boardView_->zoomToComponent(index);
+        if (tabs_ != nullptr) tabs_->setCurrentWidget(boardView_);
+        statusBar()->showMessage(tr("Zoomed to %1").arg(item->text()), 4000);
+    });
     tabs_->addTab(boardView_, tr("Board"));
     tabs_->setTabVisible(tabs_->indexOf(boardView_), false);
 
@@ -600,6 +654,7 @@ void MainWindow::createToolBar() {
                                Named{zoomOutAction_, "Zoom out"},
                                Named{zoomInAction_, "Zoom in"},
                                Named{fitAction_, "Fit board"},
+                               Named{measureAction_, "Measure"},
                                Named{exportAction_, "Export"}}) {
         entry.action->setIconText(QString::fromLatin1(entry.name));
     }
@@ -609,6 +664,7 @@ void MainWindow::createToolBar() {
     toolbar->addAction(zoomOutAction_);
     toolbar->addAction(zoomInAction_);
     toolbar->addAction(fitAction_);
+    toolbar->addAction(measureAction_);
     toolbar->addSeparator();
     toolbar->addAction(exportAction_);
 
@@ -686,32 +742,6 @@ void MainWindow::populateLayers() {
 
     layersTree_->resizeColumnToContents(0);
     updateBoardOptions();
-}
-
-void MainWindow::populateNets() {
-    if (netsTable_ == nullptr) return;
-    netsTable_->setSortingEnabled(false);
-    netsTable_->setRowCount(0);
-    netsTable_->setRowCount(static_cast<int>(document_.netSummaries.size()));
-
-    for (int row = 0; row < static_cast<int>(document_.netSummaries.size()); ++row) {
-        const pcbv::NetSummary& net = document_.netSummaries[static_cast<std::size_t>(row)];
-        auto* nameItem = new QTableWidgetItem(qs(net.name));
-        nameItem->setData(Qt::UserRole, QString::fromStdString(net.name));
-        netsTable_->setItem(row, 0, nameItem);
-        netsTable_->setItem(row, 1, new NumericItem(QString::number(net.pads), net.pads));
-        netsTable_->setItem(row, 2, new NumericItem(QString::number(net.tracks), net.tracks));
-        netsTable_->setItem(row, 3, new NumericItem(QString::number(net.vias), net.vias));
-        netsTable_->setItem(row, 4,
-                            new MeasureItem(qs(pcbv::formatMm(net.trackLength)), net.trackLength));
-    }
-    netsTable_->setSortingEnabled(true);
-    if (netsInfo_ != nullptr) {
-        netsInfo_->setText(document_.netSummaries.empty()
-                               ? tr("no nets")
-                               : tr("%1 nets").arg(static_cast<int>(document_.netSummaries.size())));
-    }
-    applyNetFilter(netFilter_ != nullptr ? netFilter_->text() : QString());
 }
 
 void MainWindow::exportSvg() {
@@ -808,6 +838,89 @@ void MainWindow::exportNetlistCsv() {
     file.close();
     log(tr("Exported netlist: %1").arg(path));
     statusBar()->showMessage(tr("Exported %1").arg(path), 6000);
+}
+
+void MainWindow::printBoard() {
+    if (!hasDocument_) {
+        ensureDocumentLoaded();
+        return;
+    }
+    if (boardView_ == nullptr || !boardView_->hasGeometry() || !document_.bounds.valid) {
+        QMessageBox::information(this, tr("Nothing to print"),
+                                 tr("This document has no PCB geometry to print."));
+        return;
+    }
+
+    QPrinter printer(QPrinter::HighResolution);
+    printer.setDocName(qs(document_.fileName));
+    if (document_.bounds.width() > document_.bounds.height()) {
+        printer.setPageOrientation(QPageLayout::Landscape);
+    }
+
+    QPrintDialog dialog(&printer, this);
+    dialog.setWindowTitle(tr("Print board"));
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    QPainter painter;
+    if (!painter.begin(&printer)) {
+        QMessageBox::warning(this, tr("Print failed"), tr("The printer could not be opened."));
+        return;
+    }
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setRenderHint(QPainter::TextAntialiasing, true);
+
+    const QRectF page = printer.pageLayout().paintRectPixels(printer.resolution());
+    painter.translate(page.topLeft());
+    const double dpi = printer.resolution();
+    const double devicePerMm = dpi / 25.4;
+
+    const double boardWidthMm = document_.bounds.width() * 0.0254;
+    const double boardHeightMm = document_.bounds.height() * 0.0254;
+    const double marginX = 6.0 * devicePerMm;
+    const double marginY = 6.0 * devicePerMm;
+    const double captionHeight = 9.0 * devicePerMm;
+    const double availableW = std::max(page.width() - marginX * 2.0, 10.0);
+    const double availableH = std::max(page.height() - marginY * 2.0 - captionHeight, 10.0);
+
+    // 1:1 unless the board is larger than the page; then scale down and say so.
+    double mmScale = devicePerMm;
+    QString scaleNote = tr("1:1");
+    const double neededW = boardWidthMm * devicePerMm;
+    const double neededH = boardHeightMm * devicePerMm;
+    if (neededW > availableW || neededH > availableH) {
+        const double factor = std::min(availableW / neededW, availableH / neededH);
+        mmScale = devicePerMm * factor;
+        scaleNote = tr("scaled to %1% of real size").arg(factor * 100.0, 0, 'f', 0);
+    }
+
+    QFont caption = painter.font();
+    caption.setPointSizeF(9.0);
+    painter.setFont(caption);
+    painter.setPen(QColor(0x33, 0x37, 0x3d));
+    const QString line = tr("%1  ·  board %2 × %3 mm  ·  %4")
+                             .arg(qs(document_.fileName))
+                             .arg(boardWidthMm, 0, 'f', 1)
+                             .arg(boardHeightMm, 0, 'f', 1)
+                             .arg(scaleNote);
+    painter.drawText(QRectF(marginX, marginY, availableW, captionHeight),
+                     Qt::AlignLeft | Qt::AlignVCenter, line);
+
+    const QPointF origin(marginX, marginY + captionHeight);
+    boardView_->renderForPrint(painter, origin, mmScale);
+
+    QFont footer = painter.font();
+    footer.setPointSizeF(7.5);
+    painter.setFont(footer);
+    painter.setPen(QColor(0x6b, 0x72, 0x7c));
+    painter.drawText(QRectF(marginX, page.height() - marginY + 1.0 * devicePerMm, availableW,
+                            5.0 * devicePerMm),
+                     Qt::AlignLeft | Qt::AlignVCenter,
+                     tr("Printed with PCB Viewer · %1")
+                         .arg(QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm")));
+    painter.end();
+
+    log(tr("Printed %1 (%2)").arg(qs(document_.fileName), scaleNote));
+    statusBar()->showMessage(tr("Sent to the printer — %1").arg(scaleNote), 6000);
 }
 
 void MainWindow::compareWithFile() {
@@ -922,68 +1035,20 @@ void MainWindow::createDockPanels() {
     layersDock_->setWidget(layersTree_);
     addDockWidget(Qt::LeftDockWidgetArea, layersDock_);
 
-    // --- nets ---------------------------------------------------------------
-    QWidget* netsPage = new QWidget(this);
-    QVBoxLayout* netsLayout = new QVBoxLayout(netsPage);
-    netsLayout->setContentsMargins(4, 4, 4, 4);
-    netsLayout->setSpacing(4);
-
-    QHBoxLayout* netFilterRow = new QHBoxLayout();
-    netFilter_ = new QLineEdit(netsPage);
-    netFilter_->setPlaceholderText(tr("Filter nets…"));
-    netFilter_->setClearButtonEnabled(true);
-    netsInfo_ = new QLabel(tr("no document"), netsPage);
-    netsInfo_->setStyleSheet("color:#8a929e;");
-    netFilterRow->addWidget(netFilter_, 1);
-    netFilterRow->addWidget(netsInfo_);
-    netsLayout->addLayout(netFilterRow);
-
-    netsTable_ = new QTableWidget(0, 5, netsPage);
-    netsTable_->setHorizontalHeaderLabels({tr("Net"), tr("Pads"), tr("Tracks"), tr("Vias"),
-                                           tr("Length (mm)")});
-    netsTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
-    netsTable_->setSelectionMode(QAbstractItemView::SingleSelection);
-    netsTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    netsTable_->setAlternatingRowColors(true);
-    netsTable_->setSortingEnabled(true);
-    netsTable_->setShowGrid(false);
-    netsTable_->verticalHeader()->setVisible(false);
-    netsTable_->horizontalHeader()->setStretchLastSection(true);
-    netsTable_->setColumnWidth(0, 130);
-    netsTable_->setColumnWidth(1, 50);
-    netsTable_->setColumnWidth(2, 55);
-    netsTable_->setColumnWidth(3, 45);
-    netsLayout->addWidget(netsTable_, 1);
-    connect(netFilter_, &QLineEdit::textChanged, this, &MainWindow::applyNetFilter);
-    connect(netsTable_, &QTableWidget::itemSelectionChanged, this, [this]() {
-        const auto items = netsTable_->selectedItems();
-        if (items.isEmpty()) return;
-        const QTableWidgetItem* item = netsTable_->item(netsTable_->currentRow(), 0);
-        if (item == nullptr) return;
-        selectNet(item->data(Qt::UserRole).toString());
-        // Picking a net is a request to look at it, so bring the board forward.
-        if (tabs_ != nullptr && boardView_ != nullptr && boardView_->hasGeometry()) {
-            tabs_->setCurrentWidget(boardView_);
-        }
-    });
-
-    netsDock_ = new QDockWidget(tr("Nets"), this);
-    netsDock_->setObjectName("netsDock");
-    netsDock_->setWidget(netsPage);
-    addDockWidget(Qt::RightDockWidgetArea, netsDock_);
-
     logDock_ = new QDockWidget(tr("Parser log"), this);
     logDock_->setObjectName("logDock");
     logDock_->setWidget(logView_);
     addDockWidget(Qt::BottomDockWidgetArea, logDock_);
-    resizeDocks({logDock_}, {150}, Qt::Vertical);
+    resizeDocks({logDock_}, {140}, Qt::Vertical);
+    logDock_->hide();  // diagnostics only: it shows itself when something goes wrong
 
-    // Structure and Layers share the left side; Nets sits on the right so a net can be
-    // picked while the board stays visible.
+    // Two narrow columns instead of three: Structure/Layers on the left, Properties on the
+    // right. That hands the board and the tables the width they need.
     tabifyDockWidget(structureDock_, layersDock_);
-    structureDock_->raise();
-    resizeDocks({structureDock_, netsDock_}, {320, 300}, Qt::Horizontal);
-    resizeDocks({detailsDock_, netsDock_}, {420, 260}, Qt::Vertical);
+    layersDock_->raise();
+    structureDock_->setMinimumWidth(200);
+    detailsDock_->setMinimumWidth(300);
+    resizeDocks({structureDock_, detailsDock_}, {240, 330}, Qt::Horizontal);
 }
 
 // ---------------------------------------------------------------------------
@@ -1062,9 +1127,9 @@ void MainWindow::setDocument(const pcbv::Document& document) {
     populateNetlist();
     populateStructure();
     populateLayers();
-    populateNets();
     showDocumentSummary();
 
+    if (measureAction_ != nullptr && measureAction_->isChecked()) measureAction_->setChecked(false);
     if (boardView_ != nullptr) {
         boardView_->setDocument(document_);
         updateBoardOptions();
@@ -1117,11 +1182,10 @@ void MainWindow::updateActionStates() {
         if (action != nullptr) action->setEnabled(hasDocument);
     }
     // Board level commands only make sense for documents with drawable geometry.
-    for (QAction* action : {svgAction_, netlistCsvAction_, fitAction_, zoomInAction_,
-                            zoomOutAction_}) {
+    for (QAction* action : {svgAction_, netlistCsvAction_, printAction_, fitAction_,
+                            zoomInAction_, zoomOutAction_, measureAction_, zoomPartAction_}) {
         if (action != nullptr) action->setEnabled(hasBoard);
     }
-    if (netsDock_ != nullptr) netsDock_->setEnabled(hasBoard);
     if (layersDock_ != nullptr) layersDock_->setEnabled(hasBoard);
 }
 
@@ -1238,6 +1302,12 @@ void MainWindow::populateNetlist() {
     netlistTree_->clear();
 
     const std::vector<pcbv::NetConnection> netlist = pcbv::buildNetlist(document_);
+
+    // Copper statistics per net come from the board index, the pad list from the netlist,
+    // so the Netlist tab carries everything the old Nets panel used to show.
+    std::map<std::string, const pcbv::NetSummary*> summaries;
+    for (const auto& summary : document_.netSummaries) summaries[summary.name] = &summary;
+
     std::size_t pads = 0;
     int named = 0;
     int unconnected = 0;
@@ -1257,6 +1327,19 @@ void MainWindow::populateNetlist() {
         QFont netFont = netItem->font(0);
         netFont.setBold(true);
         netItem->setFont(0, netFont);
+
+        const auto summary = summaries.find(net.name);
+        if (summary != summaries.end()) {
+            const pcbv::NetSummary& copper = *summary->second;
+            netItem->setText(1, QString::number(copper.pads));
+            netItem->setText(2, QString::number(copper.tracks));
+            netItem->setText(3, QString::number(copper.vias));
+            netItem->setText(4, qs(pcbv::formatMm(copper.trackLength)));
+            for (int column = 1; column <= 4; ++column) {
+                netItem->setTextAlignment(column, Qt::AlignRight | Qt::AlignVCenter);
+                netItem->setForeground(column, QColor(0x9a, 0xa0, 0xa6));
+            }
+        }
         if (!noNet && net.nodes.size() == 1) {
             netItem->setForeground(0, QColor(0xe5, 0x7c, 0x73));  // a single pad = unfinished
             netItem->setToolTip(0, tr("Only one pad on this net — the routing looks unfinished."));
@@ -1265,13 +1348,14 @@ void MainWindow::populateNetlist() {
         for (const auto& node : net.nodes) {
             auto* child = new QTreeWidgetItem(netItem);
             child->setText(0, qs(node.label));
-            child->setText(1, qs(node.layer));
-            child->setText(2, qs(pcbv::formatMm(node.x)));
-            child->setText(3, qs(pcbv::formatMm(node.y)));
-            child->setTextAlignment(2, Qt::AlignRight | Qt::AlignVCenter);
-            child->setTextAlignment(3, Qt::AlignRight | Qt::AlignVCenter);
-            child->setForeground(2, QColor(0x9a, 0xa0, 0xa6));
-            child->setForeground(3, QColor(0x9a, 0xa0, 0xa6));
+            child->setText(5, qs(node.layer));
+            child->setText(6, qs(pcbv::formatMm(node.x)));
+            child->setText(7, qs(pcbv::formatMm(node.y)));
+            child->setTextAlignment(6, Qt::AlignRight | Qt::AlignVCenter);
+            child->setTextAlignment(7, Qt::AlignRight | Qt::AlignVCenter);
+            child->setForeground(5, QColor(0x9a, 0xa0, 0xa6));
+            child->setForeground(6, QColor(0x9a, 0xa0, 0xa6));
+            child->setForeground(7, QColor(0x9a, 0xa0, 0xa6));
             child->setData(0, Qt::UserRole, qs(net.name));
             child->setData(0, Qt::UserRole + 1, node.componentIndex);
         }
@@ -1302,7 +1386,8 @@ void MainWindow::applyNetlistFilter(const QString& text) {
         for (int child = 0; child < netItem->childCount(); ++child) {
             QTreeWidgetItem* node = netItem->child(child);
             bool match = netMatches;
-            for (int column = 0; column < 2 && !match; ++column) {
+            for (int column : {0, 5}) {
+                if (match) break;
                 if (node->text(column).contains(needle, Qt::CaseInsensitive)) match = true;
             }
             node->setHidden(!match);
@@ -1326,6 +1411,31 @@ void MainWindow::selectNetlistItem() {
     }
     const int componentIndex = item->data(0, Qt::UserRole + 1).toInt();
     if (componentIndex >= 0) selectComponentByIndex(componentIndex);
+}
+
+void MainWindow::zoomToSelectedPart() {
+    if (!hasDocument_) {
+        ensureDocumentLoaded();
+        return;
+    }
+    if (boardView_ == nullptr || !boardView_->hasGeometry()) {
+        QMessageBox::information(this, tr("No board geometry"),
+                                 tr("This document has no PCB geometry to zoom into."));
+        return;
+    }
+    if (table_ == nullptr) return;
+    const int row = table_->currentRow();
+    const QTableWidgetItem* item = row >= 0 ? table_->item(row, 0) : nullptr;
+    if (item == nullptr) {
+        statusBar()->showMessage(tr("Select a component in the table first"), 4000);
+        return;
+    }
+    const int index = item->data(Qt::UserRole + 1).toInt();
+    if (index < 0) return;
+    boardView_->setSelectedComponent(index);
+    boardView_->zoomToComponent(index);
+    if (tabs_ != nullptr) tabs_->setCurrentWidget(boardView_);
+    statusBar()->showMessage(tr("Zoomed to %1").arg(item->text()), 4000);
 }
 
 void MainWindow::populateStructure() {
@@ -1378,48 +1488,24 @@ void MainWindow::populateStructure() {
 // Selection / details
 // ---------------------------------------------------------------------------
 
-void MainWindow::applyNetFilter(const QString& text) {
-    if (netsTable_ == nullptr) return;
-    const QString needle = text.trimmed();
-    int visible = 0;
-    for (int row = 0; row < netsTable_->rowCount(); ++row) {
-        const QTableWidgetItem* item = netsTable_->item(row, 0);
-        const bool match = needle.isEmpty() ||
-                           (item != nullptr && item->text().contains(needle, Qt::CaseInsensitive));
-        netsTable_->setRowHidden(row, !match);
-        if (match) ++visible;
-    }
-    if (netsInfo_ != nullptr && hasDocument_) {
-        const int total = static_cast<int>(document_.netSummaries.size());
-        if (total == 0) {
-            netsInfo_->setText(tr("no nets"));
-        } else {
-            netsInfo_->setText(needle.isEmpty() ? tr("%1 nets").arg(total)
-                                                : tr("%1 of %2").arg(visible).arg(total));
-        }
-    }
-}
-
 void MainWindow::highlightNetRow(const QString& net) {
-    if (netsTable_ == nullptr) return;
-    for (int row = 0; row < netsTable_->rowCount(); ++row) {
-        const QTableWidgetItem* item = netsTable_->item(row, 0);
-        if (item == nullptr) continue;
-        if (item->data(Qt::UserRole).toString() == net) {
-            QSignalBlocker blocker(netsTable_);
-            netsTable_->selectRow(row);
-            netsTable_->scrollToItem(item);
-            return;
-        }
+    if (netlistTree_ == nullptr) return;
+    for (int i = 0; i < netlistTree_->topLevelItemCount(); ++i) {
+        QTreeWidgetItem* item = netlistTree_->topLevelItem(i);
+        if (item->data(0, Qt::UserRole).toString() != net) continue;
+        QSignalBlocker blocker(netlistTree_);
+        netlistTree_->setCurrentItem(item);
+        netlistTree_->scrollToItem(item);
+        return;
     }
 }
 
 void MainWindow::selectNet(const QString& net) {
     if (boardView_ != nullptr) boardView_->setHighlightNet(net);
     if (net.isEmpty()) {
-        if (netsTable_ != nullptr) {
-            QSignalBlocker blocker(netsTable_);
-            netsTable_->clearSelection();
+        if (netlistTree_ != nullptr) {
+            QSignalBlocker blocker(netlistTree_);
+            netlistTree_->clearSelection();
         }
         return;
     }
@@ -1787,6 +1873,11 @@ void MainWindow::copyBomToClipboard() {
 // ---------------------------------------------------------------------------
 
 void MainWindow::log(const QString& message) {
+    // The log is a diagnostics panel: it stays out of the way until it has bad news.
+    if (logDock_ != nullptr && !logDock_->isVisible() &&
+        (message.startsWith(QLatin1String("ERROR")) || message.startsWith(QLatin1String("warning")))) {
+        logDock_->show();
+    }
     if (logView_ == nullptr) return;
     logView_->appendPlainText(message);
 }

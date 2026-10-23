@@ -2,6 +2,7 @@
 #pragma once
 
 #include <QPointF>
+#include <QSizeF>
 #include <QString>
 #include <QWidget>
 
@@ -10,6 +11,7 @@
 #include "core/Model.h"
 
 class QKeyEvent;
+class QPainter;
 
 class BoardView : public QWidget {
     Q_OBJECT
@@ -29,6 +31,19 @@ public:
     void setHighlightNet(const QString& net);
     QString highlightNet() const { return highlightNet_; }
 
+    /// Measure tool: click two points (snapping to pads, vias and track ends); the
+    /// distance in mm is drawn on the board and reported through measureChanged().
+    void setMeasureMode(bool on);
+    bool measureMode() const { return measureMode_; }
+    void clearMeasurement();
+
+    /// Frames one component (index into document.components).
+    void zoomToComponent(int index);
+
+    /// Draws the board for the printer: `devicePerMm` device units per millimetre,
+    /// top-left corner at `origin`. Returns the size of the drawing in device units.
+    QSizeF renderForPrint(QPainter& painter, const QPointF& origin, double devicePerMm) const;
+
     bool hasGeometry() const { return !list_.empty(); }
     double zoom() const { return zoom_; }
 
@@ -42,6 +57,8 @@ signals:
     void componentClicked(int index);
     /// Emitted when the user clicks a track, pad or via of a net.
     void netClicked(const QString& net);
+    /// Emitted whenever the measure tool has something to say ("" clears the status).
+    void measureChanged(const QString& text);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -67,6 +84,13 @@ private:
     int primitiveAt(const QPointF& widgetPos) const;
     QString netAt(const QPointF& widgetPos) const;
     void clampPan();
+    void paintMeasure(QPainter& painter) const;
+    void drawPrimitives(QPainter& painter, double scale, bool forPrint) const;
+    bool snapToFeature(const QPointF& milPoint, QPointF& snapped, QString& label) const;
+    double snapToleranceMil() const;
+    QString measureText() const;
+    void applyMeasurement();
+    QPointF milToBoardPoint(double milX, double milY) const;
 
     pcbv::Document document_;
     pcbv::BoardRenderOptions options_;
@@ -85,4 +109,12 @@ private:
     QPointF panOrigin_;
     QPointF cursor_;
     bool cursorInside_ = false;
+
+    bool measureMode_ = false;
+    bool hasMeasureStart_ = false;   ///< first click placed, waiting for the second
+    QPointF measureStartMil_;
+    bool hasMeasureEnd_ = false;     ///< a finished measurement is on screen
+    QPointF measureEndMil_;
+    QPointF measureCursorMil_;       ///< snapped cursor, for the rubber band
+    QString measureSnapLabel_;
 };

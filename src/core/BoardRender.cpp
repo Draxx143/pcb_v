@@ -79,6 +79,7 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
         background.kind = RenderPrimitive::Kind::Polygon;
         background.filled = true;
         background.color = 0x10141a;
+        background.background = true;
         background.points = {Point{0.0, 0.0}, Point{list.width, 0.0},
                              Point{list.width, list.height}, Point{0.0, list.height}};
         push(background);

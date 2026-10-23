@@ -29,6 +29,7 @@ struct RenderPrimitive {
     Point center;                    ///< Circle
     double radius = 0.0;             ///< Circle, device units
 
+    bool background = false;         ///< the page fill behind the board (not printed)
     std::string net;                 ///< net this primitive belongs to ("" = none)
     bool selectable = false;         ///< true for copper primitives (click to highlight)
 

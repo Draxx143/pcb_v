@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(PcbAiViewer VERSION 0.6.0 LANGUAGES CXX)
+project(PcbAiViewer VERSION 0.7.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -58,7 +58,7 @@ target_link_libraries(pcbv-cli PRIVATE pcbv_core)
 # Qt6 GUI (optional)
 # ---------------------------------------------------------------------------
 if(PCBV_BUILD_GUI)
-    find_package(Qt6 6.2 QUIET COMPONENTS Core Gui Widgets)
+    find_package(Qt6 6.2 QUIET COMPONENTS Core Gui Widgets PrintSupport)
     if(Qt6_FOUND)
         set(CMAKE_AUTOMOC ON)
         add_executable(pcbv-gui
@@ -70,8 +70,9 @@ if(PCBV_BUILD_GUI)
             src/gui/MainWindow.cpp
             src/gui/MainWindow.h
         )
-        target_link_libraries(pcbv-gui PRIVATE pcbv_core Qt6::Core Qt6::Gui Qt6::Widgets)
-        message(STATUS "Qt ${Qt6_VERSION} found — building pcbv-gui")
+        target_link_libraries(pcbv-gui PRIVATE pcbv_core Qt6::Core Qt6::Gui Qt6::Widgets
+                                                 Qt6::PrintSupport)
+        message(STATUS "Qt ${Qt6_VERSION} found — building pcbv-gui (1:1 printing enabled)")
     else()
         message(WARNING
             "Qt6 (Core/Gui/Widgets) was not found — only the command line tool 'pcbv-cli' will be built.\n"

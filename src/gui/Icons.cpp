@@ -133,6 +133,24 @@ void exportGlyph(QPainter& painter) {
     painter.drawLine(QPointF(13.6, 7.0), QPointF(10.0, 3.4));
 }
 
+void measureGlyph(QPainter& painter) {
+    // A diagonal ruler with three ticks, drawn as a closed parallelogram.
+    const QPolygonF body({QPointF(2.6, 12.2), QPointF(12.2, 2.6), QPointF(17.4, 7.8),
+                          QPointF(7.8, 17.4)});
+    painter.drawPolygon(body);
+    const QPointF direction(0.707, 0.707);  // across the ruler
+    for (const qreal t : {0.30, 0.55, 0.80}) {
+        const QPointF from(2.6 + (12.2 - 2.6) * t, 12.2 + (2.6 - 12.2) * t);
+        painter.drawLine(from, from + direction * 3.1);
+    }
+}
+
+void printGlyph(QPainter& painter) {
+    painter.drawRoundedRect(QRectF(2.8, 7.6, 14.4, 5.6), 1.6, 1.6);
+    painter.drawRect(QRectF(5.9, 3.2, 8.2, 4.4));
+    painter.drawRect(QRectF(5.9, 13.2, 8.2, 3.6));
+}
+
 } // namespace
 
 QIcon openIcon() { return buildIcon(folderGlyph); }
@@ -141,6 +159,8 @@ QIcon zoomOutIcon() { return buildIcon(zoomOutGlyph); }
 QIcon fitIcon() { return buildIcon(fitGlyph); }
 QIcon layersIcon() { return buildIcon(layersGlyph); }
 QIcon exportIcon() { return buildIcon(exportGlyph); }
+QIcon measureIcon() { return buildIcon(measureGlyph); }
+QIcon printIcon() { return buildIcon(printGlyph); }
 
 QIcon appIcon() {
     constexpr int size = 64;

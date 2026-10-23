@@ -50,9 +50,9 @@ private slots:
     void exportGroupedBomHtml();
     void exportNetlistCsv();
     void compareWithFile();
+    void printBoard();
     void updateBoardOptions();
     void applyFilter(const QString& text);
-    void applyNetFilter(const QString& text);
     void applyBomFilter(const QString& text);
     void applyNetlistFilter(const QString& text);
     void selectNetlistItem();
@@ -71,10 +71,10 @@ private:
     void populateComponents();
     void populateBom();
     void populateNetlist();
+    void zoomToSelectedPart();
     void showComparison(const pcbv::CompareResult& result);
     void populateStructure();
     void populateLayers();
-    void populateNets();
     void selectNet(const QString& net);
     void highlightNetRow(const QString& net);
     QString netDetailsHtml(const pcbv::NetSummary& net) const;
@@ -108,12 +108,8 @@ private:
     QPlainTextEdit* logView_ = nullptr;
     QDockWidget* structureDock_ = nullptr;
     QDockWidget* layersDock_ = nullptr;
-    QDockWidget* netsDock_ = nullptr;
     QTreeWidget* layersTree_ = nullptr;
-    QTableWidget* netsTable_ = nullptr;
-    QLineEdit* netFilter_ = nullptr;
     QLineEdit* bomFilter_ = nullptr;
-    QLabel* netsInfo_ = nullptr;
     QDockWidget* detailsDock_ = nullptr;
     QDockWidget* logDock_ = nullptr;
 
@@ -126,6 +122,9 @@ private:
     QAction* svgAction_ = nullptr;
     QAction* bomCsvAction_ = nullptr;
     QAction* netlistCsvAction_ = nullptr;
+    QAction* measureAction_ = nullptr;
+    QAction* zoomPartAction_ = nullptr;
+    QAction* printAction_ = nullptr;
     QAction* bomHtmlAction_ = nullptr;
     QAction* compareAction_ = nullptr;
     QAction* findAction_ = nullptr;

@@ -24,6 +24,19 @@ QColor toColor(std::uint32_t rgb, double opacity = 1.0) {
     return color;
 }
 
+/// Paper colours: the dark theme does not survive a white page, so the board body turns
+/// light, drill holes stay light grey and near-white silkscreen prints dark.
+QColor toPrintColor(std::uint32_t rgb) {
+    if (rgb == 0x0b0f14) return QColor(0xf5, 0xf5, 0xf1);  // board body
+    if (rgb == 0x10141a) return QColor(0xc9, 0xcd, 0xd2);  // holes, drills
+    const int r = static_cast<int>((rgb >> 16) & 0xFF);
+    const int g = static_cast<int>((rgb >> 8) & 0xFF);
+    const int b = static_cast<int>(rgb & 0xFF);
+    const double luma = 0.299 * r + 0.587 * g + 0.114 * b;
+    if (luma > 190.0) return QColor(0x33, 0x37, 0x3d);     // silkscreen on paper
+    return QColor(r, g, b);
+}
+
 const char* kHint = "No PCB geometry in this document";
 
 } // namespace
@@ -162,6 +175,34 @@ void BoardView::wheelEvent(QWheelEvent* event) {
 }
 
 void BoardView::mousePressEvent(QMouseEvent* event) {
+    if (measureMode_ && !document_.bounds.valid) {
+        // Without a board outline there is nothing to measure against.
+    } else if (measureMode_) {
+        if (event->button() == Qt::LeftButton) {
+            QPointF snapped;
+            QString label;
+            const QPointF mil = widgetToMil(event->pos());
+            const QPointF point = snapToFeature(mil, snapped, label) ? snapped : mil;
+            if (!hasMeasureStart_) {
+                hasMeasureStart_ = true;
+                hasMeasureEnd_ = false;
+                measureStartMil_ = point;
+                measureCursorMil_ = point;
+            } else {
+                measureEndMil_ = point;
+                hasMeasureEnd_ = true;
+                hasMeasureStart_ = false;
+            }
+            applyMeasurement();
+            event->accept();
+            return;
+        }
+        if (event->button() == Qt::RightButton) {
+            clearMeasurement();
+            event->accept();
+            return;
+        }
+    }
     if (event->button() == Qt::MiddleButton ||
         (event->button() == Qt::LeftButton && (event->modifiers() & Qt::ShiftModifier))) {
         panning_ = true;
@@ -197,6 +238,16 @@ void BoardView::mousePressEvent(QMouseEvent* event) {
 void BoardView::mouseMoveEvent(QMouseEvent* event) {
     cursor_ = event->pos();
     cursorInside_ = true;
+    if (measureMode_) {
+        QPointF snapped;
+        QString label;
+        const QPointF mil = widgetToMil(cursor_);
+        measureCursorMil_ = snapToFeature(mil, snapped, label) ? snapped : mil;
+        measureSnapLabel_ = label;
+        if (hasMeasureStart_) applyMeasurement();
+        update();
+        return;
+    }
     if (panning_) {
         pan_ = panOrigin_ + (event->pos() - panStart_);
         clampPan();
@@ -224,6 +275,12 @@ void BoardView::mouseDoubleClickEvent(QMouseEvent* event) {
 }
 
 void BoardView::keyPressEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Escape && measureMode_ &&
+        (hasMeasureStart_ || hasMeasureEnd_)) {
+        clearMeasurement();
+        event->accept();
+        return;
+    }
     if (event->key() == Qt::Key_Escape) {
         if (!highlightNet_.isEmpty()) {
             setHighlightNet(QString());
@@ -415,113 +472,7 @@ void BoardView::paintEvent(QPaintEvent* event) {
     painter.scale(scale, scale);
     painter.translate(-list_.width / 2.0, -list_.height / 2.0);
 
-    const std::string highlighted = highlightNet_.toStdString();
-    for (const auto& primitive : list_.primitives) {
-        // With a net highlighted everything else fades, but the board outline and
-        // silkscreen stay readable as context.
-        if (!highlighted.empty()) {
-            if (primitive.net == highlighted) {
-                painter.setOpacity(1.0);
-            } else if (primitive.selectable) {
-                painter.setOpacity(0.16);
-            } else {
-                painter.setOpacity(0.55);
-            }
-        } else {
-            painter.setOpacity(1.0);
-        }
-        switch (primitive.kind) {
-            case pcbv::RenderPrimitive::Kind::Polygon: {
-                if (primitive.points.size() < 3) break;
-                QPolygonF polygon;
-                for (const auto& point : primitive.points) polygon << QPointF(point.x, point.y);
-                if (primitive.filled) {
-                    painter.setPen(Qt::NoPen);
-                    painter.setBrush(toColor(primitive.color, primitive.opacity));
-                    painter.drawPolygon(polygon);
-                }
-                if (primitive.strokeWidth > 0.0) {
-                    QPen pen(toColor(primitive.color));
-                    pen.setWidthF(std::max(primitive.strokeWidth, 0.4 / scale));
-                    pen.setJoinStyle(Qt::RoundJoin);
-                    pen.setCapStyle(Qt::RoundCap);
-                    if (primitive.dashed) pen.setStyle(Qt::DashLine);
-                    painter.setPen(pen);
-                    painter.setBrush(Qt::NoBrush);
-                    // Arcs arrive as open polylines: drawPolygon would close them.
-                    if (primitive.closed) {
-                        painter.drawPolygon(polygon);
-                    } else {
-                        painter.drawPolyline(polygon);
-                    }
-                }
-                break;
-            }
-            case pcbv::RenderPrimitive::Kind::Line: {
-                if (primitive.points.size() < 2) break;
-                QPen pen(toColor(primitive.color));
-                pen.setWidthF(std::max(primitive.strokeWidth, 0.5 / scale));
-                pen.setCapStyle(Qt::RoundCap);
-                if (primitive.dashed) pen.setStyle(Qt::DashLine);
-                painter.setPen(pen);
-                painter.setBrush(Qt::NoBrush);
-                if (primitive.points.size() == 2) {
-                    painter.drawLine(QPointF(primitive.points[0].x, primitive.points[0].y),
-                                     QPointF(primitive.points[1].x, primitive.points[1].y));
-                } else {
-                    QPolygonF polyline;
-                    for (const auto& point : primitive.points) polyline << QPointF(point.x, point.y);
-                    painter.drawPolyline(polyline);
-                }
-                break;
-            }
-            case pcbv::RenderPrimitive::Kind::Circle: {
-                if (primitive.radius <= 0.0) break;
-                const QRectF box(primitive.center.x - primitive.radius,
-                                 primitive.center.y - primitive.radius, primitive.radius * 2.0,
-                                 primitive.radius * 2.0);
-                if (primitive.filled) {
-                    painter.setPen(Qt::NoPen);
-                    painter.setBrush(toColor(primitive.color, primitive.opacity));
-                    painter.drawEllipse(box);
-                }
-                if (primitive.strokeWidth > 0.0) {
-                    QPen pen(toColor(primitive.color));
-                    pen.setWidthF(std::max(primitive.strokeWidth, 0.4 / scale));
-                    painter.setPen(pen);
-                    painter.setBrush(Qt::NoBrush);
-                    painter.drawEllipse(box);
-                }
-                break;
-            }
-            case pcbv::RenderPrimitive::Kind::Text: {
-                if (primitive.text.empty() || primitive.fontSize <= 0.0) break;
-                painter.save();
-                painter.translate(primitive.x, primitive.y);
-                if (primitive.rotation != 0.0) painter.rotate(primitive.rotation);
-                QFont font(QStringLiteral("Arial"));
-                font.setPixelSize(std::max(static_cast<int>(std::lround(primitive.fontSize)), 1));
-                painter.setFont(font);
-                const QRectF box(-2000.0, -primitive.fontSize, 4000.0, primitive.fontSize * 2.0);
-                if (primitive.strokeWidth > 0.0) {
-                    QPainterPath path;
-                    QFontMetricsF metrics(font);
-                    const double textWidth = metrics.horizontalAdvance(QString::fromStdString(primitive.text));
-                    path.addText(-textWidth / 2.0, 0.0, font, QString::fromStdString(primitive.text));
-                    painter.setPen(QPen(toColor(0x10141a), primitive.strokeWidth));
-                    painter.setBrush(toColor(primitive.color));
-                    painter.drawPath(path);
-                } else {
-                    painter.setPen(toColor(primitive.color));
-                    painter.drawText(box, Qt::AlignHCenter | Qt::AlignVCenter,
-                                     QString::fromStdString(primitive.text));
-                }
-                painter.restore();
-                break;
-            }
-        }
-    }
-    painter.setOpacity(1.0);
+    drawPrimitives(painter, scale, false);
     painter.restore();
 
     // --- selection highlight -------------------------------------------------
@@ -562,6 +513,8 @@ void BoardView::paintEvent(QPaintEvent* event) {
         painter.restore();
     }
 
+    paintMeasure(painter);
+
     // --- board size badge ----------------------------------------------------
     if (document_.bounds.valid) {
         const QString size = QStringLiteral("Board %1 × %2 mm")
@@ -590,4 +543,322 @@ void BoardView::paintEvent(QPaintEvent* event) {
         painter.setPen(QColor(0x9a, 0xa0, 0xa6));
         painter.drawText(rect().adjusted(10, 0, -10, -6), Qt::AlignLeft | Qt::AlignBottom, info);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Measure tool
+// ---------------------------------------------------------------------------
+
+void BoardView::setMeasureMode(bool on) {
+    if (measureMode_ == on) return;
+    measureMode_ = on;
+    if (!on) {
+        hasMeasureStart_ = false;
+        hasMeasureEnd_ = false;
+        measureSnapLabel_.clear();
+        unsetCursor();
+        emit measureChanged(QString());
+    } else {
+        setCursor(Qt::CrossCursor);
+    }
+    update();
+}
+
+void BoardView::clearMeasurement() {
+    hasMeasureStart_ = false;
+    hasMeasureEnd_ = false;
+    measureSnapLabel_.clear();
+    emit measureChanged(QString());
+    update();
+}
+
+double BoardView::snapToleranceMil() const {
+    const double scale = fitScale() * zoom_;
+    if (scale <= 0.0 || list_.unitsPerMil <= 0.0) return 0.0;
+    // 11 screen pixels, expressed in mil.
+    return 11.0 / (scale * list_.unitsPerMil);
+}
+
+bool BoardView::snapToFeature(const QPointF& milPoint, QPointF& snapped, QString& label) const {
+    const double tolerance = snapToleranceMil();
+    if (tolerance <= 0.0) return false;
+
+    double best = tolerance;
+    auto consider = [&](double x, double y, const std::string& text) {
+        const double distance = std::hypot(x - milPoint.x(), y - milPoint.y());
+        if (distance > best) return;
+        best = distance;
+        snapped = QPointF(x, y);
+        label = QString::fromStdString(text);
+    };
+
+    // Pads first: they are the points a designer actually wants to measure between.
+    for (const auto& pad : document_.geometry.pads) {
+        consider(pad.x, pad.y, pad.designator.empty() ? pad.net : pad.net + " " + pad.designator);
+    }
+    for (const auto& via : document_.geometry.vias) consider(via.x, via.y, via.net);
+    for (const auto& track : document_.geometry.tracks) {
+        consider(track.x1, track.y1, track.net);
+        consider(track.x2, track.y2, track.net);
+    }
+    return best < tolerance;
+}
+
+QString BoardView::measureText() const {
+    if (!hasMeasureEnd_ && !hasMeasureStart_) return QString();
+    const QPointF start = measureStartMil_;
+    const QPointF end = hasMeasureEnd_ ? measureEndMil_ : measureCursorMil_;
+    const double dx = end.x() - start.x();
+    const double dy = end.y() - start.y();
+    const double mm = std::hypot(dx, dy) * 0.0254;
+    QString text = QStringLiteral("%1 mm   (ΔX %2 · ΔY %3)")
+                       .arg(mm, 0, 'f', 3)
+                       .arg(dx * 0.0254, 0, 'f', 2)
+                       .arg(dy * 0.0254, 0, 'f', 2);
+    if (!measureSnapLabel_.isEmpty()) text += QStringLiteral("   ·   snap %1").arg(measureSnapLabel_);
+    return text;
+}
+
+void BoardView::applyMeasurement() {
+    emit measureChanged(measureText());
+}
+
+void BoardView::paintMeasure(QPainter& painter) const {
+    if (!measureMode_ || (!hasMeasureStart_ && !hasMeasureEnd_)) return;
+
+    const QPointF start = milToWidget(measureStartMil_.x(), measureStartMil_.y());
+    const QPointF endMil = hasMeasureEnd_ ? measureEndMil_ : measureCursorMil_;
+    const QPointF end = milToWidget(endMil.x(), endMil.y());
+
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
+    // The line: bright, dashed, with a dot at both ends.
+    QPen line(QColor(0xf5, 0xd7, 0x6e));
+    line.setWidthF(1.5);
+    line.setStyle(Qt::DashLine);
+    painter.setPen(line);
+    painter.setBrush(Qt::NoBrush);
+    painter.drawLine(start, end);
+
+    painter.setPen(QPen(QColor(0x10, 0x14, 0x1a), 1.0));
+    painter.setBrush(QColor(0xf5, 0xd7, 0x6e));
+    painter.drawEllipse(start, 3.4, 3.4);
+    painter.drawEllipse(end, 3.4, 3.4);
+
+    // The label sits in the middle of the line, on a dark plate so it reads over copper.
+    const QString text = measureText();
+    if (!text.isEmpty()) {
+        QFont font = painter.font();
+        font.setPixelSize(12);
+        font.setBold(true);
+        painter.setFont(font);
+        const QFontMetricsF metrics(font);
+        const QPointF middle = (start + end) / 2.0;
+        const double textWidth = metrics.horizontalAdvance(text);
+        QRectF plate(middle.x() - textWidth / 2.0 - 7.0, middle.y() - 21.0,
+                     textWidth + 14.0, 20.0);
+        const QRectF bounds = rect().adjusted(2, 2, -2, -2);
+        if (plate.left() < bounds.left()) plate.moveLeft(bounds.left());
+        if (plate.right() > bounds.right()) plate.moveRight(bounds.right());
+        if (plate.top() < bounds.top()) plate.moveTop(bounds.top());
+        if (plate.bottom() > bounds.bottom()) plate.moveBottom(bounds.bottom());
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(0x10, 0x14, 0x1a, 225));
+        painter.drawRoundedRect(plate, 4, 4);
+        painter.setPen(QColor(0xf5, 0xd7, 0x6e));
+        painter.drawText(plate, Qt::AlignCenter, text);
+    }
+
+    // A small hint while the first click is still missing.
+    if (!hasMeasureStart_ && !hasMeasureEnd_) {
+        QFont font = painter.font();
+        font.setPixelSize(11);
+        font.setBold(false);
+        painter.setFont(font);
+        painter.setPen(QColor(0x9a, 0xa0, 0xa6));
+        painter.drawText(rect().adjusted(12, 10, -12, -10), Qt::AlignLeft | Qt::AlignTop,
+                         tr("Measure: click two points   ·   Esc to finish"));
+    }
+    painter.restore();
+}
+
+void BoardView::zoomToComponent(int index) {
+    if (!hasDocument_ || index < 0 || index >= static_cast<int>(document_.components.size())) return;
+    const pcbv::Component& component = document_.components[static_cast<std::size_t>(index)];
+
+    double minX = component.x - 25.0;
+    double maxX = component.x + 25.0;
+    double minY = component.y - 25.0;
+    double maxY = component.y + 25.0;
+    if (!component.pads.empty()) {
+        minX = maxX = component.pads.front().x;
+        minY = maxY = component.pads.front().y;
+        for (const auto& pad : component.pads) {
+            minX = std::min(minX, pad.x - pad.width / 2.0);
+            maxX = std::max(maxX, pad.x + pad.width / 2.0);
+            minY = std::min(minY, pad.y - pad.height / 2.0);
+            maxY = std::max(maxY, pad.y + pad.height / 2.0);
+        }
+    }
+
+    const QPointF topLeft = milToBoardPoint(minX, maxY);
+    const QPointF bottomRight = milToBoardPoint(maxX, minY);
+    const QRectF box = QRectF(topLeft, bottomRight).normalized();
+    const double fit = fitScale();
+    if (fit <= 0.0) return;
+
+    const double targetWidth = std::max(box.width(), 1.0);
+    const double targetHeight = std::max(box.height(), 1.0);
+    const double zoomX = (width() * 0.62) / (targetWidth * fit);
+    const double zoomY = (height() * 0.62) / (targetHeight * fit);
+    zoom_ = std::clamp(std::min(zoomX, zoomY), 1.0, 60.0);
+
+    const double scale = fitScale() * zoom_;
+    const QPointF centre = box.center();
+    pan_ = QPointF(-(centre.x() - list_.width / 2.0) * scale,
+                   -(centre.y() - list_.height / 2.0) * scale);
+    clampPan();
+    update();
+}
+
+QPointF BoardView::milToBoardPoint(double milX, double milY) const {
+    const double unitsPerMil = list_.unitsPerMil > 0.0 ? list_.unitsPerMil : 1.0;
+    const double margin = viewMargin();
+    const double minX = document_.bounds.valid ? document_.bounds.minX : 0.0;
+    const double maxY = document_.bounds.valid ? document_.bounds.maxY : 1.0;
+    return QPointF((milX - minX + margin) * unitsPerMil, (maxY - milY + margin) * unitsPerMil);
+}
+
+QSizeF BoardView::renderForPrint(QPainter& painter, const QPointF& origin,
+                                 double devicePerMm) const {
+    if (list_.empty() || list_.unitsPerMil <= 0.0) return QSizeF();
+    const double unitsPerMm = list_.unitsPerMil / 0.0254;  // list units per millimetre
+    if (unitsPerMm <= 0.0) return QSizeF();
+    const double scale = devicePerMm / unitsPerMm;        // device units per list unit
+
+    painter.save();
+    painter.translate(origin);
+    painter.scale(scale, scale);
+    drawPrimitives(painter, scale, true);
+    painter.restore();
+    return QSizeF(list_.width * scale, list_.height * scale);
+}
+
+void BoardView::drawPrimitives(QPainter& painter, double scale, bool forPrint) const {
+    // On paper the dark theme is inverted: the board becomes a light plate, holes a light
+    // grey and everything that is nearly white (silkscreen) turns dark so it stays visible.
+    auto paint = [forPrint](std::uint32_t rgb, double opacity = 1.0) {
+        if (!forPrint) return toColor(rgb, opacity);
+        return toPrintColor(rgb);
+    };
+
+    const std::string highlighted = forPrint ? std::string() : highlightNet_.toStdString();
+    for (const auto& primitive : list_.primitives) {
+        if (forPrint && primitive.background) continue;
+        // With a net highlighted everything else fades, but the board outline and
+        // silkscreen stay readable as context.
+        if (!highlighted.empty()) {
+            if (primitive.net == highlighted) {
+                painter.setOpacity(1.0);
+            } else if (primitive.selectable) {
+                painter.setOpacity(0.16);
+            } else {
+                painter.setOpacity(0.55);
+            }
+        } else {
+            painter.setOpacity(1.0);
+        }
+        switch (primitive.kind) {
+            case pcbv::RenderPrimitive::Kind::Polygon: {
+                if (primitive.points.size() < 3) break;
+                QPolygonF polygon;
+                for (const auto& point : primitive.points) polygon << QPointF(point.x, point.y);
+                if (primitive.filled) {
+                    painter.setPen(Qt::NoPen);
+                    painter.setBrush(paint(primitive.color, primitive.opacity));
+                    painter.drawPolygon(polygon);
+                }
+                if (primitive.strokeWidth > 0.0) {
+                    QPen pen(paint(primitive.color));
+                    pen.setWidthF(std::max(primitive.strokeWidth, 0.4 / scale));
+                    pen.setJoinStyle(Qt::RoundJoin);
+                    pen.setCapStyle(Qt::RoundCap);
+                    if (primitive.dashed) pen.setStyle(Qt::DashLine);
+                    painter.setPen(pen);
+                    painter.setBrush(Qt::NoBrush);
+                    // Arcs arrive as open polylines: drawPolygon would close them.
+                    if (primitive.closed) {
+                        painter.drawPolygon(polygon);
+                    } else {
+                        painter.drawPolyline(polygon);
+                    }
+                }
+                break;
+            }
+            case pcbv::RenderPrimitive::Kind::Line: {
+                if (primitive.points.size() < 2) break;
+                QPen pen(paint(primitive.color));
+                pen.setWidthF(std::max(primitive.strokeWidth, 0.5 / scale));
+                pen.setCapStyle(Qt::RoundCap);
+                if (primitive.dashed) pen.setStyle(Qt::DashLine);
+                painter.setPen(pen);
+                painter.setBrush(Qt::NoBrush);
+                if (primitive.points.size() == 2) {
+                    painter.drawLine(QPointF(primitive.points[0].x, primitive.points[0].y),
+                                     QPointF(primitive.points[1].x, primitive.points[1].y));
+                } else {
+                    QPolygonF polyline;
+                    for (const auto& point : primitive.points) polyline << QPointF(point.x, point.y);
+                    painter.drawPolyline(polyline);
+                }
+                break;
+            }
+            case pcbv::RenderPrimitive::Kind::Circle: {
+                if (primitive.radius <= 0.0) break;
+                const QRectF box(primitive.center.x - primitive.radius,
+                                 primitive.center.y - primitive.radius, primitive.radius * 2.0,
+                                 primitive.radius * 2.0);
+                if (primitive.filled) {
+                    painter.setPen(Qt::NoPen);
+                    painter.setBrush(paint(primitive.color, primitive.opacity));
+                    painter.drawEllipse(box);
+                }
+                if (primitive.strokeWidth > 0.0) {
+                    QPen pen(paint(primitive.color));
+                    pen.setWidthF(std::max(primitive.strokeWidth, 0.4 / scale));
+                    painter.setPen(pen);
+                    painter.setBrush(Qt::NoBrush);
+                    painter.drawEllipse(box);
+                }
+                break;
+            }
+            case pcbv::RenderPrimitive::Kind::Text: {
+                if (primitive.text.empty() || primitive.fontSize <= 0.0) break;
+                painter.save();
+                painter.translate(primitive.x, primitive.y);
+                if (primitive.rotation != 0.0) painter.rotate(primitive.rotation);
+                QFont font(QStringLiteral("Arial"));
+                font.setPixelSize(std::max(static_cast<int>(std::lround(primitive.fontSize)), 1));
+                painter.setFont(font);
+                const QRectF box(-2000.0, -primitive.fontSize, 4000.0, primitive.fontSize * 2.0);
+                if (primitive.strokeWidth > 0.0) {
+                    QPainterPath path;
+                    QFontMetricsF metrics(font);
+                    const double textWidth = metrics.horizontalAdvance(QString::fromStdString(primitive.text));
+                    path.addText(-textWidth / 2.0, 0.0, font, QString::fromStdString(primitive.text));
+                    painter.setPen(QPen(paint(0x10141a), primitive.strokeWidth));
+                    painter.setBrush(paint(primitive.color));
+                    painter.drawPath(path);
+                } else {
+                    painter.setPen(paint(primitive.color));
+                    painter.drawText(box, Qt::AlignHCenter | Qt::AlignVCenter,
+                                     QString::fromStdString(primitive.text));
+                }
+                painter.restore();
+                break;
+            }
+        }
+    }
+    painter.setOpacity(1.0);
 }
