@@ -1,0 +1,36 @@
+name: build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake qt6-base-dev
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPCBV_BUILD_GUI=ON
+
+      - name: Build
+        run: cmake --build build --parallel "$(nproc)"
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: CLI smoke run (help)
+        run: ./build/pcbv-cli --help
+
+      - name: Parse a public Altium sample
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/issus/AltiumSharp/master/TestData/DAC.SchDoc" -o /tmp/DAC.SchDoc
+          ./build/pcbv-cli --summary /tmp/DAC.SchDoc
+          ./build/pcbv-smoke /tmp/DAC.SchDoc
