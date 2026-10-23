@@ -513,11 +513,13 @@ void MainWindow::populateLayers() {
         if (!usage.copper) item->setForeground(0, QColor(0xb0, 0xbe, 0xc5));
     }
 
-    // Draw options that are not a layer but belong next to them.
+    // Draw options that are not a layer but belong next to them. A schematic has no
+    // board geometry, so the panel stays empty for those documents.
     struct Extra { const char* key; const char* label; bool on; };
     for (const Extra& extra : {Extra{"pads", QT_TR_NOOP("Pads"), true},
                                Extra{"designators", QT_TR_NOOP("Designators"), true},
                                Extra{"silk", QT_TR_NOOP("Silkscreen text"), true}}) {
+        if (document_.geometry.empty()) break;
         auto* item = new QTreeWidgetItem(layersTree_);
         item->setText(0, tr(extra.label));
         item->setData(0, Qt::UserRole, -1);
@@ -550,7 +552,9 @@ void MainWindow::populateNets() {
     }
     netsTable_->setSortingEnabled(true);
     if (netsInfo_ != nullptr) {
-        netsInfo_->setText(tr("%1 nets").arg(static_cast<int>(document_.netSummaries.size())));
+        netsInfo_->setText(document_.netSummaries.empty()
+                               ? tr("no nets")
+                               : tr("%1 nets").arg(static_cast<int>(document_.netSummaries.size())));
     }
     applyNetFilter(netFilter_ != nullptr ? netFilter_->text() : QString());
 }
@@ -933,8 +937,12 @@ void MainWindow::applyNetFilter(const QString& text) {
     }
     if (netsInfo_ != nullptr && hasDocument_) {
         const int total = static_cast<int>(document_.netSummaries.size());
-        netsInfo_->setText(needle.isEmpty() ? tr("%1 nets").arg(total)
-                                            : tr("%1 of %2").arg(visible).arg(total));
+        if (total == 0) {
+            netsInfo_->setText(tr("no nets"));
+        } else {
+            netsInfo_->setText(needle.isEmpty() ? tr("%1 nets").arg(total)
+                                                : tr("%1 of %2").arg(visible).arg(total));
+        }
     }
 }
 
