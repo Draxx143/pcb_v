@@ -446,16 +446,16 @@ void MainWindow::createToolBar() {
     toolbar->setIconSize(QSize(20, 20));
     toolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
 
-    // Screen readers and the "..." menu fallback see a real name, not just a glyph.
+    // Icon text is what the "toolbar overflow" menu and tooltips fall back to, so the
+    // buttons stay labelled even though only the glyph is drawn.
     struct Named { QAction* action; const char* name; };
-    for (const Named& entry : {Named{openAction_, "Open document"},
+    for (const Named& entry : {Named{openAction_, "Open"},
                                Named{zoomOutAction_, "Zoom out"},
                                Named{zoomInAction_, "Zoom in"},
                                Named{fitAction_, "Fit board"},
                                Named{layersAction_, "Layers"},
                                Named{exportAction_, "Export"}}) {
         entry.action->setIconText(QString::fromLatin1(entry.name));
-        entry.action->setAccessibleName(QString::fromLatin1(entry.name));
     }
 
     toolbar->addAction(openAction_);

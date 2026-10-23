@@ -21,7 +21,14 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPCBV_BUILD_GUI=ON
 
       - name: Build
-        run: cmake --build build --parallel "$(nproc)"
+        run: set -o pipefail && cmake --build build --parallel "$(nproc)" 2>&1 | tee build.log
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
 
       - name: Verify the Qt6 GUI target was built
         run: |
