@@ -323,6 +323,37 @@ int countSingleBlockRecords(const std::vector<std::uint8_t>& data) {
 }
 
 // ---------------------------------------------------------------------------
+// Natural ordering for pad designators ("A1", "A2", "A10")
+// ---------------------------------------------------------------------------
+
+bool naturalLess(const std::string& a, const std::string& b) {
+    std::size_t i = 0;
+    std::size_t j = 0;
+    while (i < a.size() && j < b.size()) {
+        const bool digitA = a[i] >= '0' && a[i] <= '9';
+        const bool digitB = b[j] >= '0' && b[j] <= '9';
+        if (digitA && digitB) {
+            std::size_t endA = i;
+            std::size_t endB = j;
+            while (endA < a.size() && a[endA] >= '0' && a[endA] <= '9') ++endA;
+            while (endB < b.size() && b[endB] >= '0' && b[endB] <= '9') ++endB;
+            const long long valueA = std::strtoll(a.substr(i, endA - i).c_str(), nullptr, 10);
+            const long long valueB = std::strtoll(b.substr(j, endB - j).c_str(), nullptr, 10);
+            if (valueA != valueB) return valueA < valueB;
+            i = endA;
+            j = endB;
+        } else {
+            const unsigned char ca = static_cast<unsigned char>(a[i]);
+            const unsigned char cb = static_cast<unsigned char>(b[j]);
+            if (ca != cb) return ca < cb;
+            ++i;
+            ++j;
+        }
+    }
+    return (a.size() - i) < (b.size() - j);
+}
+
+// ---------------------------------------------------------------------------
 // PCB layer names
 // ---------------------------------------------------------------------------
 
@@ -551,6 +582,10 @@ void parsePcbDoc(CompoundFile& cf, Document& doc) {
             if (pos == before) break; // safety net against malformed data
         }
         doc.pcb.pads = parsed;
+        for (auto& component : doc.components) {
+            std::sort(component.pads.begin(), component.pads.end(),
+                      [](const Pad& a, const Pad& b) { return naturalLess(a.designator, b.designator); });
+        }
         if (parsed == 0) doc.warnings.push_back("Pads6 stream could not be decoded.");
     }
 

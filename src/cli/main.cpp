@@ -37,15 +37,36 @@ void printUsage() {
         "  * .PcbLib / .SchLib support is planned for a later step.\n";
 }
 
-std::string padRight(const std::string& text, std::size_t width) {
-    if (text.size() >= width) return text;
-    return text + std::string(width - text.size(), ' ');
+std::size_t utf8Length(const std::string& text) {
+    std::size_t count = 0;
+    for (unsigned char c : text) {
+        if ((c & 0xC0) != 0x80) ++count; // count non-continuation bytes
+    }
+    return count;
 }
 
+/// Appends spaces until the text occupies `width` terminal columns (UTF-8 aware).
+std::string padRight(const std::string& text, std::size_t width) {
+    const std::size_t length = utf8Length(text);
+    if (length >= width) return text;
+    return text + std::string(width - length, ' ');
+}
+
+/// Truncates to `width` characters (never splitting a UTF-8 sequence) and adds an ellipsis.
 std::string shorten(const std::string& text, std::size_t width) {
-    if (text.size() <= width) return text;
-    if (width <= 1) return text.substr(0, width);
-    return text.substr(0, width - 1) + "\xE2\x80\xA6"; // … (UTF-8)
+    const std::size_t length = utf8Length(text);
+    if (length <= width) return text;
+    if (width <= 1) width = 2;
+    std::size_t kept = 0;
+    std::size_t bytes = 0;
+    while (bytes < text.size() && kept < width - 1) {
+        ++bytes;
+        while (bytes < text.size() && (static_cast<unsigned char>(text[bytes]) & 0xC0) == 0x80) {
+            ++bytes;
+        }
+        ++kept;
+    }
+    return text.substr(0, bytes) + "\xE2\x80\xA6"; // …
 }
 
 void printTable(const pcbv::Document& doc) {
@@ -53,17 +74,21 @@ void printTable(const pcbv::Document& doc) {
     std::cout << doc.fileName << "  —  " << pcbv::docTypeName(doc.type) << "  —  "
               << doc.components.size() << " components\n\n";
 
-    std::cout << padRight("#", 4) << padRight("DESIGNATOR", 14) << padRight("COMMENT", 22)
-              << padRight("FOOTPRINT", 26) << padRight("MANUFACTURER", 18)
-              << padRight(pcb ? "PADS" : "PINS", 6) << "PART NUMBER\n";
-    std::cout << std::string(110, '-') << "\n";
+    auto cell = [](const std::string& text, std::size_t width) {
+        return padRight(text, width) + " ";
+    };
+
+    std::cout << cell("#", 4) << cell("DESIGNATOR", 14) << cell("COMMENT", 22)
+              << cell("FOOTPRINT", 26) << cell("MANUFACTURER", 18)
+              << cell(pcb ? "PADS" : "PINS", 6) << "PART NUMBER\n";
+    std::cout << std::string(112, '-') << "\n";
 
     int index = 1;
     for (const auto& c : doc.components) {
-        std::cout << padRight(std::to_string(index++), 4) << padRight(shorten(c.designator, 13), 14)
-                  << padRight(shorten(c.comment, 21), 22) << padRight(shorten(c.footprint, 25), 26)
-                  << padRight(shorten(c.manufacturer, 17), 18)
-                  << padRight(std::to_string(pcb ? c.padCount : c.pinCount), 6)
+        std::cout << cell(std::to_string(index++), 4) << cell(shorten(c.designator, 13), 14)
+                  << cell(shorten(c.comment, 21), 22) << cell(shorten(c.footprint, 25), 26)
+                  << cell(shorten(c.manufacturer, 17), 18)
+                  << cell(std::to_string(pcb ? c.padCount : c.pinCount), 6)
                   << shorten(c.partNumber, 40) << "\n";
     }
     std::cout << "\n" << pcbv::toSummaryText(doc);
