@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "AltiumText.h"
+#include "BoardIndex.h"
 
 namespace pcbv {
 namespace detail {
@@ -316,6 +317,7 @@ void parseAsciiPcb(const std::vector<std::uint8_t>& bytes, Document& document) {
     document.recordTypes = histogram;
 
     sortComponentPads(document);
+    finalizeBoard(document);
 
     if (document.components.empty())
         document.warnings.push_back("No RECORD=Component entries were found in this ASCII PCB file.");

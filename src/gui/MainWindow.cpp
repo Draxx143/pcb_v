@@ -27,6 +27,7 @@
 #include <QCloseEvent>
 #include <QCoreApplication>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QPlainTextEdit>
 #include <QPalette>
 #include <QStyleFactory>
@@ -40,15 +41,18 @@
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
+#include <QTreeWidgetItemIterator>
 #include <QUrl>
 #include <QVariant>
 #include <QVBoxLayout>
 #include <QWidget>
 
 #include <cstdint>
+#include <set>
 
 #include "BoardView.h"
 #include "Icons.h"
+#include "core/LayerStyle.h"
 #include "core/AltiumParser.h"
 #include "core/Export.h"
 
@@ -72,6 +76,18 @@ public:
     }
     bool operator<(const QTableWidgetItem& other) const override {
         return data(Qt::UserRole).toInt() < other.data(Qt::UserRole).toInt();
+    }
+};
+
+/// Table item that sorts by a hidden floating point key (track lengths, mm).
+class MeasureItem : public QTableWidgetItem {
+public:
+    MeasureItem(const QString& text, double value) : QTableWidgetItem(text) {
+        setData(Qt::UserRole, value);
+        setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    }
+    bool operator<(const QTableWidgetItem& other) const override {
+        return data(Qt::UserRole).toDouble() < other.data(Qt::UserRole).toDouble();
     }
 };
 
@@ -261,35 +277,6 @@ void MainWindow::createActions() {
         if (boardView_ != nullptr) boardView_->fitToWindow();
     });
 
-    auto makeLayerAction = [this](const QString& text, bool checked) {
-        auto* action = new QAction(text, this);
-        action->setCheckable(true);
-        action->setChecked(checked);
-        connect(action, &QAction::toggled, this, &MainWindow::updateBoardOptions);
-        return action;
-    };
-    topLayerAction_ = makeLayerAction(tr("Top copper"), true);
-    bottomLayerAction_ = makeLayerAction(tr("Bottom copper"), true);
-    silkAction_ = makeLayerAction(tr("Silkscreen"), true);
-    padsAction_ = makeLayerAction(tr("Pads"), true);
-    designatorsAction_ = makeLayerAction(tr("Designators"), true);
-    mechanicalAction_ = makeLayerAction(tr("Mechanical / keep-out"), false);
-
-    // Toolbar entry points: a layers menu and a single export menu, so the toolbar
-    // stays short and nothing is repeated as a separate button.
-    QMenu* layersMenu = new QMenu(tr("Layers"), this);
-    layersMenu->addAction(topLayerAction_);
-    layersMenu->addAction(bottomLayerAction_);
-    layersMenu->addAction(silkAction_);
-    layersMenu->addAction(padsAction_);
-    layersMenu->addAction(designatorsAction_);
-    layersMenu->addSeparator();
-    layersMenu->addAction(mechanicalAction_);
-
-    layersAction_ = new QAction(pcbv::gui::layersIcon(), tr("&Layers"), this);
-    layersAction_->setToolTip(tr("Show or hide board layers"));
-    layersAction_->setMenu(layersMenu);
-
     QMenu* exportMenu = new QMenu(tr("Export"), this);
     exportMenu->addAction(csvAction_);
     exportMenu->addAction(jsonAction_);
@@ -336,6 +323,8 @@ void MainWindow::createMenus() {
     QMenu* panelsMenu = viewMenu->addMenu(tr("&Panels"));
     if (structureDock_) panelsMenu->addAction(structureDock_->toggleViewAction());
     if (detailsDock_) panelsMenu->addAction(detailsDock_->toggleViewAction());
+    if (layersDock_) panelsMenu->addAction(layersDock_->toggleViewAction());
+    if (netsDock_) panelsMenu->addAction(netsDock_->toggleViewAction());
     if (logDock_) panelsMenu->addAction(logDock_->toggleViewAction());
     viewMenu->addSeparator();
     viewMenu->addAction(fitAction_);
@@ -432,6 +421,7 @@ void MainWindow::createComponentTable() {
     // widget and leave it floating as a stray window.
     boardView_ = new BoardView(tabs_);
     connect(boardView_, &BoardView::componentClicked, this, &MainWindow::selectComponentByIndex);
+    connect(boardView_, &BoardView::netClicked, this, &MainWindow::selectNet);
     tabs_->addTab(boardView_, tr("Board"));
     tabs_->setTabVisible(tabs_->indexOf(boardView_), false);
 
@@ -453,7 +443,6 @@ void MainWindow::createToolBar() {
                                Named{zoomOutAction_, "Zoom out"},
                                Named{zoomInAction_, "Zoom in"},
                                Named{fitAction_, "Fit board"},
-                               Named{layersAction_, "Layers"},
                                Named{exportAction_, "Export"}}) {
         entry.action->setIconText(QString::fromLatin1(entry.name));
     }
@@ -464,12 +453,11 @@ void MainWindow::createToolBar() {
     toolbar->addAction(zoomInAction_);
     toolbar->addAction(fitAction_);
     toolbar->addSeparator();
-    toolbar->addAction(layersAction_);
     toolbar->addAction(exportAction_);
 
     // Actions that own a menu must open it on a single click (the default is a
     // long-press "delayed popup", which feels broken for a toolbar button).
-    for (QAction* action : {layersAction_, exportAction_}) {
+    for (QAction* action : {exportAction_}) {
         if (auto* button = qobject_cast<QToolButton*>(toolbar->widgetForAction(action))) {
             button->setPopupMode(QToolButton::InstantPopup);
         }
@@ -478,14 +466,91 @@ void MainWindow::createToolBar() {
 
 void MainWindow::updateBoardOptions() {
     if (boardView_ == nullptr) return;
-    pcbv::BoardRenderOptions options = boardView_->renderOptions();
-    options.topCopper = topLayerAction_ == nullptr || topLayerAction_->isChecked();
-    options.bottomCopper = bottomLayerAction_ == nullptr || bottomLayerAction_->isChecked();
-    options.silk = silkAction_ == nullptr || silkAction_->isChecked();
-    options.pads = padsAction_ == nullptr || padsAction_->isChecked();
-    options.designators = designatorsAction_ == nullptr || designatorsAction_->isChecked();
-    options.mechanical = mechanicalAction_ != nullptr && mechanicalAction_->isChecked();
+    pcbv::BoardRenderOptions options;
+    if (layersTree_ != nullptr) {
+        QTreeWidgetItemIterator it(layersTree_);
+        while (*it != nullptr) {
+            QTreeWidgetItem* item = *it;
+            const int layer = item->data(0, Qt::UserRole).toInt();
+            const QString extra = item->data(0, Qt::UserRole + 1).toString();
+            const bool on = item->checkState(0) == Qt::Checked;
+            if (!extra.isEmpty()) {
+                if (extra == QLatin1String("pads")) options.pads = on;
+                else if (extra == QLatin1String("designators")) options.designators = on;
+                else if (extra == QLatin1String("silk")) options.silk = on;
+            } else if (!on) {
+                options.hiddenLayers.insert(layer);
+            }
+            ++it;
+        }
+    }
     boardView_->setRenderOptions(options);
+}
+
+void MainWindow::populateLayers() {
+    if (layersTree_ == nullptr) return;
+    layersTree_->clear();
+
+    const std::set<int> hidden = pcbv::defaultHiddenLayers();
+    for (const auto& usage : document_.layerUsage) {
+        auto* item = new QTreeWidgetItem(layersTree_);
+        item->setText(0, qs(usage.name));
+        item->setText(1, QString::number(usage.primitives));
+        item->setTextAlignment(1, Qt::AlignRight | Qt::AlignVCenter);
+        item->setData(0, Qt::UserRole, usage.layer);
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(0, hidden.count(usage.layer) != 0 ? Qt::Unchecked : Qt::Checked);
+
+        // Colour swatch: the same colour the board view paints this layer with.
+        QPixmap swatch(12, 12);
+        const std::uint32_t rgb = pcbv::layerColor(usage.layer);
+        swatch.fill(QColor(static_cast<int>((rgb >> 16) & 0xFF),
+                           static_cast<int>((rgb >> 8) & 0xFF), static_cast<int>(rgb & 0xFF)));
+        item->setIcon(0, QIcon(swatch));
+        item->setForeground(1, QColor(0x8a, 0x92, 0x9e));
+        if (!usage.copper) item->setForeground(0, QColor(0xb0, 0xbe, 0xc5));
+    }
+
+    // Draw options that are not a layer but belong next to them.
+    struct Extra { const char* key; const char* label; bool on; };
+    for (const Extra& extra : {Extra{"pads", QT_TR_NOOP("Pads"), true},
+                               Extra{"designators", QT_TR_NOOP("Designators"), true},
+                               Extra{"silk", QT_TR_NOOP("Silkscreen text"), true}}) {
+        auto* item = new QTreeWidgetItem(layersTree_);
+        item->setText(0, tr(extra.label));
+        item->setData(0, Qt::UserRole, -1);
+        item->setData(0, Qt::UserRole + 1, QString::fromLatin1(extra.key));
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(0, extra.on ? Qt::Checked : Qt::Unchecked);
+        item->setForeground(0, QColor(0x8a, 0xb4, 0xf8));
+    }
+
+    layersTree_->resizeColumnToContents(0);
+    updateBoardOptions();
+}
+
+void MainWindow::populateNets() {
+    if (netsTable_ == nullptr) return;
+    netsTable_->setSortingEnabled(false);
+    netsTable_->setRowCount(0);
+    netsTable_->setRowCount(static_cast<int>(document_.netSummaries.size()));
+
+    for (int row = 0; row < static_cast<int>(document_.netSummaries.size()); ++row) {
+        const pcbv::NetSummary& net = document_.netSummaries[static_cast<std::size_t>(row)];
+        auto* nameItem = new QTableWidgetItem(qs(net.name));
+        nameItem->setData(Qt::UserRole, QString::fromStdString(net.name));
+        netsTable_->setItem(row, 0, nameItem);
+        netsTable_->setItem(row, 1, new NumericItem(QString::number(net.pads), net.pads));
+        netsTable_->setItem(row, 2, new NumericItem(QString::number(net.tracks), net.tracks));
+        netsTable_->setItem(row, 3, new NumericItem(QString::number(net.vias), net.vias));
+        netsTable_->setItem(row, 4,
+                            new MeasureItem(qs(pcbv::formatMm(net.trackLength)), net.trackLength));
+    }
+    netsTable_->setSortingEnabled(true);
+    if (netsInfo_ != nullptr) {
+        netsInfo_->setText(tr("%1 nets").arg(static_cast<int>(document_.netSummaries.size())));
+    }
+    applyNetFilter(netFilter_ != nullptr ? netFilter_->text() : QString());
 }
 
 void MainWindow::exportSvg() {
@@ -556,11 +621,77 @@ void MainWindow::createDockPanels() {
     logView_->setMaximumBlockCount(500);
     logView_->setStyleSheet("font-family: ui-monospace, Consolas, monospace; font-size: 12px;");
 
+    layersTree_ = new QTreeWidget(this);
+    layersTree_->setHeaderLabels({tr("Layer"), tr("Items")});
+    layersTree_->setRootIsDecorated(false);
+    layersTree_->setAlternatingRowColors(true);
+    layersTree_->setUniformRowHeights(true);
+    connect(layersTree_, &QTreeWidget::itemChanged, this, [this](QTreeWidgetItem*, int) {
+        updateBoardOptions();
+    });
+
+    layersDock_ = new QDockWidget(tr("Layers"), this);
+    layersDock_->setObjectName("layersDock");
+    layersDock_->setWidget(layersTree_);
+    addDockWidget(Qt::LeftDockWidgetArea, layersDock_);
+
+    // --- nets ---------------------------------------------------------------
+    QWidget* netsPage = new QWidget(this);
+    QVBoxLayout* netsLayout = new QVBoxLayout(netsPage);
+    netsLayout->setContentsMargins(4, 4, 4, 4);
+    netsLayout->setSpacing(4);
+
+    QHBoxLayout* netFilterRow = new QHBoxLayout();
+    netFilter_ = new QLineEdit(netsPage);
+    netFilter_->setPlaceholderText(tr("Filter nets…"));
+    netFilter_->setClearButtonEnabled(true);
+    netsInfo_ = new QLabel(tr("no document"), netsPage);
+    netsInfo_->setStyleSheet("color:#8a929e;");
+    netFilterRow->addWidget(netFilter_, 1);
+    netFilterRow->addWidget(netsInfo_);
+    netsLayout->addLayout(netFilterRow);
+
+    netsTable_ = new QTableWidget(0, 5, netsPage);
+    netsTable_->setHorizontalHeaderLabels({tr("Net"), tr("Pads"), tr("Tracks"), tr("Vias"),
+                                           tr("Length (mm)")});
+    netsTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    netsTable_->setSelectionMode(QAbstractItemView::SingleSelection);
+    netsTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    netsTable_->setAlternatingRowColors(true);
+    netsTable_->setSortingEnabled(true);
+    netsTable_->setShowGrid(false);
+    netsTable_->verticalHeader()->setVisible(false);
+    netsTable_->horizontalHeader()->setStretchLastSection(true);
+    netsTable_->setColumnWidth(0, 130);
+    netsTable_->setColumnWidth(1, 50);
+    netsTable_->setColumnWidth(2, 55);
+    netsTable_->setColumnWidth(3, 45);
+    netsLayout->addWidget(netsTable_, 1);
+    connect(netFilter_, &QLineEdit::textChanged, this, &MainWindow::applyNetFilter);
+    connect(netsTable_, &QTableWidget::itemSelectionChanged, this, [this]() {
+        const auto items = netsTable_->selectedItems();
+        if (items.isEmpty()) return;
+        const QTableWidgetItem* item = netsTable_->item(netsTable_->currentRow(), 0);
+        if (item == nullptr) return;
+        selectNet(item->data(Qt::UserRole).toString());
+    });
+
+    netsDock_ = new QDockWidget(tr("Nets"), this);
+    netsDock_->setObjectName("netsDock");
+    netsDock_->setWidget(netsPage);
+    addDockWidget(Qt::LeftDockWidgetArea, netsDock_);
+
     logDock_ = new QDockWidget(tr("Parser log"), this);
     logDock_->setObjectName("logDock");
     logDock_->setWidget(logView_);
     addDockWidget(Qt::BottomDockWidgetArea, logDock_);
     resizeDocks({logDock_}, {150}, Qt::Vertical);
+
+    // The three left panels share one tabbed area instead of stacking up.
+    tabifyDockWidget(structureDock_, layersDock_);
+    tabifyDockWidget(layersDock_, netsDock_);
+    structureDock_->raise();
+    resizeDocks({structureDock_}, {320}, Qt::Horizontal);
 }
 
 // ---------------------------------------------------------------------------
@@ -631,6 +762,8 @@ void MainWindow::setDocument(const pcbv::Document& document) {
     setWindowTitle(QString("%1 — PCB Viewer").arg(qs(document_.fileName)));
     populateComponents();
     populateStructure();
+    populateLayers();
+    populateNets();
     showDocumentSummary();
 
     if (boardView_ != nullptr) {
@@ -679,9 +812,11 @@ void MainWindow::updateActionStates() {
         if (action != nullptr) action->setEnabled(hasDocument);
     }
     // Board level commands only make sense for documents with drawable geometry.
-    for (QAction* action : {svgAction_, fitAction_, zoomInAction_, zoomOutAction_, layersAction_}) {
+    for (QAction* action : {svgAction_, fitAction_, zoomInAction_, zoomOutAction_}) {
         if (action != nullptr) action->setEnabled(hasBoard);
     }
+    if (netsDock_ != nullptr) netsDock_->setEnabled(hasBoard);
+    if (layersDock_ != nullptr) layersDock_->setEnabled(hasBoard);
 }
 
 void MainWindow::ensureDocumentLoaded() {
@@ -781,6 +916,93 @@ void MainWindow::populateStructure() {
 // ---------------------------------------------------------------------------
 // Selection / details
 // ---------------------------------------------------------------------------
+
+void MainWindow::applyNetFilter(const QString& text) {
+    if (netsTable_ == nullptr) return;
+    const QString needle = text.trimmed();
+    int visible = 0;
+    for (int row = 0; row < netsTable_->rowCount(); ++row) {
+        const QTableWidgetItem* item = netsTable_->item(row, 0);
+        const bool match = needle.isEmpty() ||
+                           (item != nullptr && item->text().contains(needle, Qt::CaseInsensitive));
+        netsTable_->setRowHidden(row, !match);
+        if (match) ++visible;
+    }
+    if (netsInfo_ != nullptr && hasDocument_) {
+        const int total = static_cast<int>(document_.netSummaries.size());
+        netsInfo_->setText(needle.isEmpty() ? tr("%1 nets").arg(total)
+                                            : tr("%1 of %2").arg(visible).arg(total));
+    }
+}
+
+void MainWindow::highlightNetRow(const QString& net) {
+    if (netsTable_ == nullptr) return;
+    for (int row = 0; row < netsTable_->rowCount(); ++row) {
+        const QTableWidgetItem* item = netsTable_->item(row, 0);
+        if (item == nullptr) continue;
+        if (item->data(Qt::UserRole).toString() == net) {
+            QSignalBlocker blocker(netsTable_);
+            netsTable_->selectRow(row);
+            netsTable_->scrollToItem(item);
+            return;
+        }
+    }
+}
+
+void MainWindow::selectNet(const QString& net) {
+    if (boardView_ != nullptr) boardView_->setHighlightNet(net);
+    if (net.isEmpty()) return;
+
+    highlightNetRow(net);
+    if (tabs_ != nullptr && boardView_ != nullptr) {
+        tabs_->setCurrentWidget(boardView_);
+    }
+    for (const auto& summary : document_.netSummaries) {
+        if (qs(summary.name) == net) {
+            detailsView_->setHtml(netDetailsHtml(summary));
+            return;
+        }
+    }
+}
+
+QString MainWindow::netDetailsHtml(const pcbv::NetSummary& net) const {
+    QString html;
+    html += "<div style='font-family:sans-serif;padding:10px 14px'>";
+    html += QString("<h2 style='margin:0 0 2px 0;color:#ffffff'>%1</h2>")
+                .arg(qs(net.name).toHtmlEscaped());
+    html += QString("<div style='color:#8ab4f8;font-size:14px;margin-bottom:10px'>%1</div>")
+                .arg(tr("net"));
+
+    auto row = [&html](const QString& key, const QString& value) {
+        if (value.trimmed().isEmpty()) return;
+        html += QString(
+                    "<tr><td style='color:#9aa0a6;padding:3px 12px 3px 0;white-space:nowrap;"
+                    "vertical-align:top'>%1</td><td style='color:#e3e6ea'>%2</td></tr>")
+                    .arg(key, value);
+    };
+    html += "<table style='font-size:13px;border-collapse:collapse'>";
+    row(tr("Pads"), QString::number(net.pads));
+    row(tr("Track segments"), QString::number(net.tracks));
+    row(tr("Vias"), QString::number(net.vias));
+    row(tr("Copper length"), tr("%1 mm").arg(qs(pcbv::formatMm(net.trackLength))));
+    html += "</table>";
+
+    if (!net.connections.empty()) {
+        html += tr("<h3 style='color:#8ab4f8;font-size:13px;margin:16px 0 6px 0;"
+                   "text-transform:uppercase;letter-spacing:.06em'>Connected pads (%1)</h3>")
+                    .arg(static_cast<int>(net.connections.size()));
+        html += "<div style='font-size:12.5px;color:#cfd8dc;line-height:1.7'>";
+        for (std::size_t i = 0; i < net.connections.size(); ++i) {
+            if (i > 0) html += "&nbsp;·&nbsp;";
+            html += qs(net.connections[i]).toHtmlEscaped();
+        }
+        html += "</div>";
+    }
+    html += "<p style='color:#8a929e;font-size:12px;margin-top:16px'>"
+            + tr("Click an empty spot on the board to clear the highlight.") + "</p>";
+    html += "</div>";
+    return html;
+}
 
 void MainWindow::applyFilter(const QString& text) {
     if (table_ == nullptr) return;

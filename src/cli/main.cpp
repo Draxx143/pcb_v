@@ -6,6 +6,7 @@
 //   pcbv-cli --json out.json board.PcbDoc      export JSON
 //   pcbv-cli --html report.html board.PcbDoc   export an HTML report
 //   pcbv-cli --svg  board.svg  board.PcbDoc    export the PCB drawing as SVG
+//   pcbv-cli --nets  board.PcbDoc             net table + copper stackup
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
@@ -14,6 +15,7 @@
 #include <vector>
 
 #include "core/AltiumParser.h"
+#include "core/BoardIndex.h"
 #include "core/Export.h"
 
 namespace {
@@ -29,6 +31,7 @@ void printUsage() {
         "  pcbv-cli --json <out.json> <file>\n"
         "  pcbv-cli --html <out.html> <file>\n"
         "  pcbv-cli --svg  <out.svg>  <file.PcbDoc>  board drawing (2D, scalable)\n"
+        "  pcbv-cli --nets  <file.PcbDoc>            net table, track lengths and the stackup\n"
         "  pcbv-cli --details <designator> <file>   print every parameter of one part\n"
         "  pcbv-cli --inspect <file>                show how the file was detected/decoded\n"
         "\n"
@@ -143,6 +146,47 @@ bool writeFile(const std::string& path, const std::string& content) {
     return static_cast<bool>(out);
 }
 
+/// Pads a cell to `width` columns with a two space gap.
+std::string cellText(const std::string& text, std::size_t width) {
+    return padRight(shorten(text, width - 2), width);
+}
+
+/// Net table plus the copper stackup: what the GUI shows in its left panels.
+void printNets(const pcbv::Document& doc) {
+    if (doc.netSummaries.empty()) {
+        std::cout << "no nets in this document\n";
+        return;
+    }
+    std::cout << doc.fileName << "  —  " << doc.netSummaries.size() << " nets\n\n";
+    std::cout << cellText("#", 4) << cellText("NET", 24) << cellText("PADS", 6)
+              << cellText("TRACKS", 8) << cellText("VIAS", 6) << cellText("LENGTH", 12)
+              << "CONNECTIONS\n";
+    std::cout << std::string(110, '-') << "\n";
+    int index = 1;
+    for (const auto& net : doc.netSummaries) {
+        std::string connections;
+        for (std::size_t i = 0; i < net.connections.size() && i < 6; ++i) {
+            if (i > 0) connections += ", ";
+            connections += net.connections[i];
+        }
+        if (net.connections.size() > 6) connections += ", …";
+        std::cout << cellText(std::to_string(index++), 4) << cellText(net.name, 24)
+                  << cellText(std::to_string(net.pads), 6) << cellText(std::to_string(net.tracks), 8)
+                  << cellText(std::to_string(net.vias), 6)
+                  << cellText(pcbv::formatMm(net.trackLength), 12) << connections << "\n";
+    }
+
+    const std::string stackup = pcbv::copperStackup(doc);
+    if (!stackup.empty()) {
+        std::cout << "\nCopper stackup: " << stackup << "\n";
+    }
+    std::cout << "Layers in use (" << doc.layerUsage.size() << "):\n";
+    for (const auto& usage : doc.layerUsage) {
+        std::cout << "  " << padRight(usage.name, 20) << padRight(std::to_string(usage.layer), 5)
+                  << (usage.copper ? "copper" : "other") << "  " << usage.primitives << " items\n";
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -158,7 +202,7 @@ int main(int argc, char** argv) {
     std::string inputPath;
     std::string detailDesignator;
 
-    if (mode == "--list" || mode == "--summary") {
+    if (mode == "--list" || mode == "--summary" || mode == "--nets") {
         if (args.size() < 2) return fail("missing input file");
         inputPath = args[1];
     } else if (mode == "--csv" || mode == "--json" || mode == "--html" || mode == "--svg") {
@@ -212,7 +256,9 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (mode == "--svg") {
-        const std::string svg = pcbv::toSvg(doc);
+        pcbv::BoardRenderOptions renderOptions;
+        renderOptions.hiddenLayers = pcbv::defaultHiddenLayers();  // same defaults as the GUI
+        const std::string svg = pcbv::toSvg(doc, renderOptions);
         if (svg.empty()) {
             std::cerr << "error: no PCB geometry in this document (is it a schematic?)\n";
             return 1;
@@ -221,6 +267,10 @@ int main(int argc, char** argv) {
         std::cout << "wrote " << outputPath << " (" << doc.geometry.tracks.size() << " tracks, "
                   << doc.geometry.pads.size() << " pads, " << doc.geometry.vias.size()
                   << " vias)\n";
+        return 0;
+    }
+    if (mode == "--nets") {
+        printNets(doc);
         return 0;
     }
     if (mode == "--details") {

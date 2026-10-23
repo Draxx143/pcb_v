@@ -38,6 +38,8 @@ void BoardView::setDocument(const pcbv::Document& document) {
     document_ = document;
     hasDocument_ = true;
     selected_ = -1;
+    highlightNet_.clear();
+    hoverNet_.clear();
     dirty_ = true;
     rebuild();
     resetView();
@@ -48,6 +50,8 @@ void BoardView::clear() {
     document_ = pcbv::Document();
     hasDocument_ = false;
     selected_ = -1;
+    highlightNet_.clear();
+    hoverNet_.clear();
     list_ = pcbv::BoardRenderList();
     zoom_ = 1.0;
     pan_ = QPointF();
@@ -64,6 +68,12 @@ void BoardView::setRenderOptions(const pcbv::BoardRenderOptions& options) {
 void BoardView::setSelectedComponent(int index) {
     if (index == selected_) return;
     selected_ = index;
+    update();
+}
+
+void BoardView::setHighlightNet(const QString& net) {
+    if (net == highlightNet_) return;
+    highlightNet_ = net;
     update();
 }
 
@@ -161,6 +171,16 @@ void BoardView::mousePressEvent(QMouseEvent* event) {
         return;
     }
     if (event->button() == Qt::LeftButton) {
+        // A click picks the net under the cursor (what a PCB engineer expects) and,
+        // when the click lands on a pad, the component that owns it.
+        const QString net = netAt(event->pos());
+        if (!net.isEmpty()) {
+            setHighlightNet(net);
+            emit netClicked(net);
+        } else {
+            setHighlightNet(QString());
+            emit netClicked(QString());
+        }
         const int index = componentAt(event->pos());
         if (index >= 0) {
             setSelectedComponent(index);
@@ -179,6 +199,12 @@ void BoardView::mouseMoveEvent(QMouseEvent* event) {
     if (panning_) {
         pan_ = panOrigin_ + (event->pos() - panStart_);
         clampPan();
+    } else {
+        const QString net = netAt(cursor_);
+        if (net != hoverNet_) {
+            hoverNet_ = net;
+            setCursor(net.isEmpty() ? Qt::ArrowCursor : Qt::PointingHandCursor);
+        }
     }
     update();
 }
@@ -197,6 +223,10 @@ void BoardView::mouseDoubleClickEvent(QMouseEvent* event) {
 }
 
 void BoardView::leaveEvent(QEvent* event) {
+    if (!hoverNet_.isEmpty()) {
+        hoverNet_.clear();
+        update();
+    }
     cursorInside_ = false;
     update();
     QWidget::leaveEvent(event);
@@ -259,6 +289,86 @@ int BoardView::componentAt(const QPointF& widgetPos) const {
     return best;
 }
 
+namespace {
+
+/// Distance from a point to a segment, in the same units as the inputs.
+double distanceToSegment(const QPointF& point, const QPointF& a, const QPointF& b) {
+    const double dx = b.x() - a.x();
+    const double dy = b.y() - a.y();
+    const double lengthSquared = dx * dx + dy * dy;
+    if (lengthSquared <= 1e-12) return std::hypot(point.x() - a.x(), point.y() - a.y());
+    double t = ((point.x() - a.x()) * dx + (point.y() - a.y()) * dy) / lengthSquared;
+    t = std::clamp(t, 0.0, 1.0);
+    return std::hypot(point.x() - (a.x() + t * dx), point.y() - (a.y() + t * dy));
+}
+
+bool pointInPolygon(const QPointF& point, const std::vector<pcbv::Point>& polygon) {
+    bool inside = false;
+    for (std::size_t i = 0, j = polygon.size() - 1; i < polygon.size(); j = i++) {
+        const double xi = polygon[i].x, yi = polygon[i].y;
+        const double xj = polygon[j].x, yj = polygon[j].y;
+        const bool crosses = ((yi > point.y()) != (yj > point.y())) &&
+                             (point.x() < (xj - xi) * (point.y() - yi) / (yj - yi + 1e-12) + xi);
+        if (crosses) inside = !inside;
+    }
+    return inside;
+}
+
+} // namespace
+
+int BoardView::primitiveAt(const QPointF& widgetPos) const {
+    if (list_.empty()) return -1;
+    const double scale = fitScale() * zoom_;
+    const QPointF device = widgetToBoard(widgetPos);
+    const double tolerance = 6.0 / std::max(scale, 1e-6);  // ~6 screen pixels
+
+    int best = -1;
+    double bestScore = 1e18;
+    for (std::size_t i = 0; i < list_.primitives.size(); ++i) {
+        const pcbv::RenderPrimitive& primitive = list_.primitives[i];
+        if (!primitive.selectable) continue;
+        double distance = 1e18;
+        switch (primitive.kind) {
+            case pcbv::RenderPrimitive::Kind::Line:
+                if (primitive.points.size() >= 2) {
+                    distance = distanceToSegment(device,
+                                                 QPointF(primitive.points[0].x, primitive.points[0].y),
+                                                 QPointF(primitive.points[1].x, primitive.points[1].y));
+                    distance -= primitive.strokeWidth / 2.0;
+                }
+                break;
+            case pcbv::RenderPrimitive::Kind::Circle: {
+                const double centreDistance =
+                    std::hypot(device.x() - primitive.center.x, device.y() - primitive.center.y);
+                if (primitive.filled) {
+                    distance = centreDistance - primitive.radius;
+                } else {
+                    distance = std::fabs(centreDistance - primitive.radius) - primitive.strokeWidth / 2.0;
+                }
+                break;
+            }
+            case pcbv::RenderPrimitive::Kind::Polygon:
+                if (primitive.points.size() >= 3 && pointInPolygon(device, primitive.points)) {
+                    distance = 0.0;  // a pad is hit as soon as the cursor is inside it
+                }
+                break;
+            case pcbv::RenderPrimitive::Kind::Text:
+                break;
+        }
+        if (distance <= tolerance && distance < bestScore) {
+            bestScore = distance;
+            best = static_cast<int>(i);
+        }
+    }
+    return best;
+}
+
+QString BoardView::netAt(const QPointF& widgetPos) const {
+    const int index = primitiveAt(widgetPos);
+    if (index < 0) return QString();
+    return QString::fromStdString(list_.primitives[static_cast<std::size_t>(index)].net);
+}
+
 void BoardView::paintEvent(QPaintEvent* event) {
     Q_UNUSED(event);
     rebuild();
@@ -289,7 +399,21 @@ void BoardView::paintEvent(QPaintEvent* event) {
     painter.scale(scale, scale);
     painter.translate(-list_.width / 2.0, -list_.height / 2.0);
 
+    const std::string highlighted = highlightNet_.toStdString();
     for (const auto& primitive : list_.primitives) {
+        // With a net highlighted everything else fades, but the board outline and
+        // silkscreen stay readable as context.
+        if (!highlighted.empty()) {
+            if (primitive.net == highlighted) {
+                painter.setOpacity(1.0);
+            } else if (primitive.selectable) {
+                painter.setOpacity(0.16);
+            } else {
+                painter.setOpacity(0.55);
+            }
+        } else {
+            painter.setOpacity(1.0);
+        }
         switch (primitive.kind) {
             case pcbv::RenderPrimitive::Kind::Polygon: {
                 if (primitive.points.size() < 3) break;
@@ -381,6 +505,7 @@ void BoardView::paintEvent(QPaintEvent* event) {
             }
         }
     }
+    painter.setOpacity(1.0);
     painter.restore();
 
     // --- selection highlight -------------------------------------------------
@@ -436,10 +561,16 @@ void BoardView::paintEvent(QPaintEvent* event) {
     // --- status overlay ------------------------------------------------------
     if (cursorInside_ && hasDocument_ && document_.bounds.valid) {
         const QPointF mil = widgetToMil(cursor_);
-        const QString info = QStringLiteral("X %1 mm   Y %2 mm   ·   zoom %3%")
-                                 .arg(mil.x() * 0.0254, 0, 'f', 2)
-                                 .arg(mil.y() * 0.0254, 0, 'f', 2)
-                                 .arg(zoom_ * 100.0, 0, 'f', 0);
+        QString info = QStringLiteral("X %1 mm   Y %2 mm   ·   zoom %3%")
+                           .arg(mil.x() * 0.0254, 0, 'f', 2)
+                           .arg(mil.y() * 0.0254, 0, 'f', 2)
+                           .arg(zoom_ * 100.0, 0, 'f', 0);
+        if (!hoverNet_.isEmpty()) {
+            info += QStringLiteral("   ·   net %1").arg(hoverNet_);
+        } else if (!highlightNet_.isEmpty()) {
+            info += QStringLiteral("   ·   highlighting %1 (click empty space to clear)")
+                        .arg(highlightNet_);
+        }
         painter.setPen(QColor(0x9a, 0xa0, 0xa6));
         painter.drawText(rect().adjusted(10, 0, -10, -6), Qt::AlignLeft | Qt::AlignBottom, info);
     }

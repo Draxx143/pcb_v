@@ -23,17 +23,9 @@ struct View {
 };
 
 bool wanted(int layer, const BoardRenderOptions& options) {
-    switch (layerGroup(layer)) {
-        case LayerGroup::TopCopper: return options.topCopper;
-        case LayerGroup::MidCopper: return options.midCopper;
-        case LayerGroup::BottomCopper: return options.bottomCopper;
-        case LayerGroup::TopSilk:
-        case LayerGroup::BottomSilk: return options.silk;
-        case LayerGroup::Mechanical:
-        case LayerGroup::KeepOut:
-        case LayerGroup::Other: return options.mechanical;
-        default: return options.miscLayers;
-    }
+    if (options.isHidden(layer)) return false;
+    if (!options.silk && isSilk(layer)) return false;
+    return true;
 }
 
 double normaliseAngle(double angle) {
@@ -46,6 +38,13 @@ double normaliseAngle(double angle) {
 
 bool hasBoardGeometry(const Document& doc) {
     return !doc.geometry.empty();
+}
+
+std::set<int> defaultHiddenLayers() {
+    std::set<int> hidden;
+    for (const int layer : {35, 36, 37, 38, 55, 56, 57, 73}) hidden.insert(layer);
+    for (int layer = 58; layer <= 72; ++layer) hidden.insert(layer);  // mechanical 1..15
+    return hidden;
 }
 
 BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& options,
@@ -122,6 +121,7 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
         polygon.kind = RenderPrimitive::Kind::Polygon;
         polygon.filled = true;
         polygon.color = layerColor(region.layer);
+        polygon.net = region.net;
         if (region.pour) {
             // Without Altium's clearance engine the filled shape of a pour cannot be
             // reproduced; draw its contour so the polygon stays visible.
@@ -171,6 +171,8 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
         line.strokeWidth = std::max(track.width * view.unit, 0.6);
         line.points = {Point{view.x(track.x1), view.y(track.y1)},
                        Point{view.x(track.x2), view.y(track.y2)}};
+        line.net = track.net;
+        line.selectable = true;
         push(line);
     }
 
@@ -223,6 +225,13 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
             const double halfH = heightMil * view.unit / 2.0;
             if (halfW <= 0.0 || halfH <= 0.0) continue;
             const bool throughHole = pad.holeSize > 0.0;
+            // A through-hole pad lives on every copper layer; it only disappears once
+            // both outer layers are switched off.
+            const int padLayer = throughHole ? 74 : (pad.layer == 0 ? 1 : pad.layer);
+            if (throughHole ? (options.isHidden(1) && options.isHidden(32))
+                            : options.isHidden(padLayer)) {
+                continue;
+            }
             const double px = view.x(pad.x);
             const double py = view.y(pad.y);
             const double rad = -pad.rotation * kPi / 180.0;
@@ -232,7 +241,9 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
             RenderPrimitive body;
             body.kind = RenderPrimitive::Kind::Polygon;
             body.filled = true;
-            body.color = throughHole ? layerColor(74) : layerColor(pad.layer == 0 ? 1 : pad.layer);
+            body.color = layerColor(padLayer);
+            body.net = pad.net;
+            body.selectable = true;
             for (const auto& corner : {Point{-halfW, -halfH}, Point{halfW, -halfH},
                                        Point{halfW, halfH}, Point{-halfW, halfH}}) {
                 body.points.push_back(Point{px + corner.x * cosA - corner.y * sinA,
@@ -261,6 +272,8 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
         ring.filled = true;
         ring.color = layerColor(74);
         ring.opacity = 0.9;
+        ring.net = via.net;
+        ring.selectable = true;
         push(ring);
         if (via.hole > 0.0) {
             RenderPrimitive hole = ring;
@@ -275,6 +288,7 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
     if (options.silk) {
         for (const auto& label : doc.geometry.texts) {
             if (label.text.empty() || !isSilk(label.layer) || label.height <= 0.0) continue;
+            if (options.isHidden(label.layer)) continue;
             RenderPrimitive text;
             text.kind = RenderPrimitive::Kind::Text;
             text.color = layerColor(label.layer);

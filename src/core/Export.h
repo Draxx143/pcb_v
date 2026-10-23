@@ -1,6 +1,7 @@
 // Export.h — text, CSV, JSON and HTML renderings of a parsed document.
 #pragma once
 
+#include <set>
 #include <string>
 
 #include "Model.h"
@@ -19,17 +20,20 @@ std::string toJson(const Document& doc);
 /// Self contained HTML report (open in any browser / print to PDF).
 std::string toHtml(const Document& doc);
 
-/// Which layers the board drawing includes.
+/// Which layers and extras the board drawing includes.
 struct BoardRenderOptions {
-    bool topCopper = true;
-    bool midCopper = true;
-    bool bottomCopper = true;
-    bool silk = true;
+    /// Altium layer ids that are switched off in the Layers panel.
+    std::set<int> hiddenLayers;
+    bool silk = true;        ///< silkscreen text and silk tracks (also honoured per layer)
     bool pads = true;
     bool designators = true;
-    bool mechanical = false;  ///< mechanical / keep-out / unknown layers
-    bool miscLayers = false; ///< solder mask, paste, drill
+
+    bool isHidden(int layer) const { return hiddenLayers.find(layer) != hiddenLayers.end(); }
 };
+
+/// Layers that are hidden the first time a board is opened: manufacturing-only
+/// layers (paste, solder mask, mechanical, keep-out, drill) would only add noise.
+std::set<int> defaultHiddenLayers();
 
 /// Standalone SVG drawing of the PCB geometry (empty string for schematics).
 std::string toSvg(const Document& doc, const BoardRenderOptions& options = BoardRenderOptions());

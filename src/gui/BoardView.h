@@ -2,6 +2,7 @@
 #pragma once
 
 #include <QPointF>
+#include <QString>
 #include <QWidget>
 
 #include "core/BoardRender.h"
@@ -22,6 +23,10 @@ public:
     /// Highlights one component (index into document.components), -1 = none.
     void setSelectedComponent(int index);
 
+    /// Highlights every primitive of one net ("" clears the highlight).
+    void setHighlightNet(const QString& net);
+    QString highlightNet() const { return highlightNet_; }
+
     bool hasGeometry() const { return !list_.empty(); }
     double zoom() const { return zoom_; }
 
@@ -33,6 +38,8 @@ public slots:
 signals:
     /// Emitted when the user clicks a component on the board.
     void componentClicked(int index);
+    /// Emitted when the user clicks a track, pad or via of a net.
+    void netClicked(const QString& net);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -54,6 +61,8 @@ private:
     QPointF widgetToMil(const QPointF& point) const;
     double viewMargin() const;
     int componentAt(const QPointF& widgetPos) const;
+    int primitiveAt(const QPointF& widgetPos) const;
+    QString netAt(const QPointF& widgetPos) const;
     void clampPan();
 
     pcbv::Document document_;
@@ -63,6 +72,8 @@ private:
     bool hasDocument_ = false;
     bool dirty_ = true;
     int selected_ = -1;
+    QString highlightNet_;
+    QString hoverNet_;
 
     double zoom_ = 1.0;      // 1.0 = fit
     QPointF pan_;            // device pixels

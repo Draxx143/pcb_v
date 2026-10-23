@@ -47,6 +47,7 @@ private slots:
     void exportSvg();
     void updateBoardOptions();
     void applyFilter(const QString& text);
+    void applyNetFilter(const QString& text);
     void showSelectedComponent();
     void showDocumentSummary();
     void selectComponentByIndex(int index);
@@ -61,6 +62,11 @@ private:
     void applyTheme();
     void populateComponents();
     void populateStructure();
+    void populateLayers();
+    void populateNets();
+    void selectNet(const QString& net);
+    void highlightNetRow(const QString& net);
+    QString netDetailsHtml(const pcbv::NetSummary& net) const;
     void log(const QString& message);
     void setDocument(const pcbv::Document& document);
     void ensureDocumentLoaded();
@@ -81,6 +87,12 @@ private:
     QTextBrowser* detailsView_ = nullptr;
     QPlainTextEdit* logView_ = nullptr;
     QDockWidget* structureDock_ = nullptr;
+    QDockWidget* layersDock_ = nullptr;
+    QDockWidget* netsDock_ = nullptr;
+    QTreeWidget* layersTree_ = nullptr;
+    QTableWidget* netsTable_ = nullptr;
+    QLineEdit* netFilter_ = nullptr;
+    QLabel* netsInfo_ = nullptr;
     QDockWidget* detailsDock_ = nullptr;
     QDockWidget* logDock_ = nullptr;
 
@@ -92,17 +104,11 @@ private:
     QAction* summaryAction_ = nullptr;
     QAction* svgAction_ = nullptr;
     QAction* findAction_ = nullptr;
-    QAction* layersAction_ = nullptr;
     QAction* exportAction_ = nullptr;
     QAction* zoomInAction_ = nullptr;
     QAction* zoomOutAction_ = nullptr;
     QAction* fitAction_ = nullptr;
-    QAction* topLayerAction_ = nullptr;
-    QAction* bottomLayerAction_ = nullptr;
-    QAction* silkAction_ = nullptr;
-    QAction* padsAction_ = nullptr;
-    QAction* designatorsAction_ = nullptr;
-    QAction* mechanicalAction_ = nullptr;
+
     QAction* exitAction_ = nullptr;
 
     QString lastDirectory_;

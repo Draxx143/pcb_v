@@ -174,6 +174,25 @@ struct Net {
     int index = -1;
 };
 
+/// Aggregated view of one net: what is connected and how much copper carries it.
+struct NetSummary {
+    std::string name;
+    int index = -1;
+    int pads = 0;
+    int tracks = 0;
+    int vias = 0;
+    double trackLength = 0.0;              ///< mil, sum of segment lengths
+    std::vector<std::string> connections;  ///< "R1-2" style pad references, sorted
+};
+
+/// How much geometry sits on one layer (drives the Layers panel).
+struct LayerUsage {
+    int layer = 0;
+    std::string name;
+    int primitives = 0;
+    bool copper = false;
+};
+
 /// Primitive counters for a PCB document.
 struct PcbCounts {
     int tracks = 0;
@@ -233,6 +252,10 @@ struct Document {
     std::vector<std::pair<std::string, int>> recordTypes;
 
     PcbGeometry geometry;   ///< drawable primitives (empty for schematics)
+
+    /// Net / layer indexes (PCB documents; computed once after parsing).
+    std::vector<NetSummary> netSummaries;
+    std::vector<LayerUsage> layerUsage;
 
     PcbCounts pcb;
     SchCounts sch;

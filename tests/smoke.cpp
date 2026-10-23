@@ -11,6 +11,7 @@
 
 #include "core/AltiumParser.h"
 #include "core/BoardRender.h"
+#include "core/BoardIndex.h"
 #include "core/Export.h"
 
 namespace {
@@ -68,6 +69,24 @@ void selfTest() {
         check(ascii.document.pcb.tracks == 1, "ASCII track counted");
         check(ascii.document.geometry.tracks.size() == 1, "ASCII track kept as geometry");
         check(ascii.document.geometry.pads.size() == 1, "ASCII pad kept as geometry");
+        // The net/layer index that feeds the Nets and Layers panels.
+        check(ascii.document.netSummaries.size() == 1, "net index has one net");
+        if (!ascii.document.netSummaries.empty()) {
+            const pcbv::NetSummary& gnd = ascii.document.netSummaries.front();
+            check(gnd.name == "GND", "net index keeps the name");
+            check(gnd.pads == 1 && gnd.tracks == 1, "net index counts pads and tracks");
+            check(gnd.trackLength > 99.0 && gnd.trackLength < 101.0, "net index sums track length (mil)");
+            check(!gnd.connections.empty() && gnd.connections.front() == "R1-1",
+                  "net index labels pads as designator-pin");
+        }
+        check(!ascii.document.layerUsage.empty(), "layer usage is indexed");
+        if (!ascii.document.layerUsage.empty()) {
+            check(ascii.document.layerUsage.front().layer == 1, "top copper comes first");
+            check(ascii.document.layerUsage.front().primitives == 2,
+                  "layer usage counts the track and the pad");
+        }
+        check(pcbv::copperStackup(ascii.document) == "1 copper layer", "stackup describes one copper layer");
+
         const std::string svg = pcbv::toSvg(ascii.document);
         check(svg.find("<svg") != std::string::npos, "SVG drawing produced for an ASCII board");
         check(svg.find("<line") != std::string::npos, "SVG contains the track");
@@ -204,6 +223,23 @@ void verifyDocument(const std::string& path) {
         const std::string svg = pcbv::toSvg(doc);
         check(svg.find("<svg") != std::string::npos && svg.size() > 200,
               "SVG export produced a drawing");
+
+        // --- net and layer index ------------------------------------------------
+        check(!doc.netSummaries.empty(), "net index is built");
+        check(!doc.layerUsage.empty(), "layer usage is built");
+        std::size_t padsWithNet = 0;
+        for (const auto& pad : doc.geometry.pads) {
+            if (!pad.net.empty()) ++padsWithNet;
+        }
+        std::size_t indexedPads = 0;
+        for (const auto& net : doc.netSummaries) {
+            indexedPads += static_cast<std::size_t>(net.pads);
+        }
+        check(indexedPads == padsWithNet, "every pad with a net is indexed once");
+        if (!doc.netSummaries.empty()) {
+            std::printf("  nets: %zu, layers: %zu, stackup: %s\n", doc.netSummaries.size(),
+                        doc.layerUsage.size(), pcbv::copperStackup(doc).c_str());
+        }
     } else {
         check(pcbv::toSvg(doc).empty(), "schematic has no board drawing");
     }

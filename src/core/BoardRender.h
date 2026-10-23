@@ -29,6 +29,9 @@ struct RenderPrimitive {
     Point center;                    ///< Circle
     double radius = 0.0;             ///< Circle, device units
 
+    std::string net;                 ///< net this primitive belongs to ("" = none)
+    bool selectable = false;         ///< true for copper primitives (click to highlight)
+
     std::string text;                ///< Text
     double fontSize = 0.0;           ///< Text, device units
     double rotation = 0.0;           ///< Text/rect rotation in degrees (board space)

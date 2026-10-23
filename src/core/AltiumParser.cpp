@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "AltiumInternal.h"
+#include "BoardIndex.h"
 #include "AltiumText.h"
 #include "CompoundFile.h"
 
@@ -411,6 +412,9 @@ void parseBinaryPcb(CompoundFile& cf, Document& doc) {
         const int count = countSingleBlockRecords(data);
         if (count >= 0) doc.pcb.*(counter.field) = count;
     }
+
+    // Nets, layer usage and stackup are derived once, from the geometry above.
+    finalizeBoard(doc);
 }
 
 // ---------------------------------------------------------------------------
