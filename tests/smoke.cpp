@@ -328,6 +328,21 @@ void verifyDocument(const std::string& path) {
         check(svg.find("<svg") != std::string::npos && svg.size() > 200,
               "SVG export produced a drawing");
 
+        // The 3D view puts every primitive on its own layer, so the display list has to
+        // carry the layer id for all of them.
+        bool sawTop = false;
+        bool sawBottom = false;
+        for (const auto& primitive : render.primitives) {
+            if (primitive.layer == 1) sawTop = true;
+            if (primitive.layer == 32) sawBottom = true;
+        }
+        check(sawTop, "display list keeps the top layer id");
+        bool boardHasBottom = false;
+        for (const auto& track : doc.geometry.tracks) {
+            if (track.layer == 32) boardHasBottom = true;
+        }
+        if (boardHasBottom) check(sawBottom, "display list keeps the bottom layer id");
+
         // --- net and layer index ------------------------------------------------
         check(!doc.netSummaries.empty(), "net index is built");
         check(!doc.layerUsage.empty(), "layer usage is built");

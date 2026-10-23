@@ -40,6 +40,11 @@ public:
     /// Frames one component (index into document.components).
     void zoomToComponent(int index);
 
+    /// Simple 3D preview: the board extruded to 1.6 mm and tilted. Drag rotates,
+    /// the wheel zooms, a double click resets the camera.
+    void setThreeD(bool on);
+    bool threeD() const { return threeD_; }
+
     /// Draws the board for the printer: `devicePerMm` device units per millimetre,
     /// top-left corner at `origin`. Returns the size of the drawing in device units.
     QSizeF renderForPrint(QPainter& painter, const QPointF& origin, double devicePerMm) const;
@@ -59,6 +64,8 @@ signals:
     void netClicked(const QString& net);
     /// Emitted whenever the measure tool has something to say ("" clears the status).
     void measureChanged(const QString& text);
+    /// Emitted when the view itself changes mode (Esc leaves the 3D view).
+    void threeDChanged(bool on);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -85,6 +92,8 @@ private:
     QString netAt(const QPointF& widgetPos) const;
     void clampPan();
     void paintMeasure(QPainter& painter) const;
+    void paintThreeD(QPainter& painter);
+    void resetThreeDCamera();
     void drawPrimitives(QPainter& painter, double scale, bool forPrint) const;
     bool snapToFeature(const QPointF& milPoint, QPointF& snapped, QString& label) const;
     double snapToleranceMil() const;
@@ -117,4 +126,11 @@ private:
     QPointF measureEndMil_;
     QPointF measureCursorMil_;       ///< snapped cursor, for the rubber band
     QString measureSnapLabel_;
+
+    bool threeD_ = false;
+    double yawDeg_ = -35.0;        ///< rotation around the board normal
+    double elevationDeg_ = 52.0;   ///< 90 = straight down on the board
+    double threeDZoom_ = 1.0;
+    QPointF rotateStart_;
+    bool rotating_ = false;
 };

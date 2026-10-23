@@ -18,6 +18,7 @@ QIcon layersIcon();
 QIcon exportIcon();
 QIcon measureIcon();
 QIcon printIcon();
+QIcon threeDIcon();
 
 /// Window / task bar icon: a small stylised PCB.
 QIcon appIcon();

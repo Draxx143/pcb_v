@@ -2,6 +2,7 @@
 #include "BoardRender.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 
 #include "LayerStyle.h"
@@ -122,6 +123,7 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
         polygon.kind = RenderPrimitive::Kind::Polygon;
         polygon.filled = true;
         polygon.color = layerColor(region.layer);
+        polygon.layer = region.layer;
         polygon.net = region.net;
         if (region.pour) {
             // Without Altium's clearance engine the filled shape of a pour cannot be
@@ -155,6 +157,7 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
         rect.kind = RenderPrimitive::Kind::Polygon;
         rect.filled = true;
         rect.color = layerColor(fill.layer);
+        rect.layer = fill.layer;
         for (const auto& corner : {Point{-halfW, -halfH}, Point{halfW, -halfH},
                                    Point{halfW, halfH}, Point{-halfW, halfH}}) {
             rect.points.push_back(Point{px + corner.x * cosA - corner.y * sinA,
@@ -169,6 +172,7 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
         RenderPrimitive line;
         line.kind = RenderPrimitive::Kind::Line;
         line.color = layerColor(track.layer);
+        line.layer = track.layer;
         line.strokeWidth = std::max(track.width * view.unit, 0.6);
         line.points = {Point{view.x(track.x1), view.y(track.y1)},
                        Point{view.x(track.x2), view.y(track.y2)}};
@@ -194,6 +198,7 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
             circle.radius = r;
             circle.filled = false;
             circle.color = layerColor(arc.layer);
+            circle.layer = arc.layer;
             circle.strokeWidth = stroke;
             push(circle);
             continue;
@@ -205,6 +210,7 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
         RenderPrimitive line;
         line.kind = RenderPrimitive::Kind::Line;
         line.color = layerColor(arc.layer);
+        line.layer = arc.layer;
         line.strokeWidth = stroke;
         for (int i = 0; i <= steps; ++i) {
             const double angle = (start + sweep * static_cast<double>(i) / steps) * kPi / 180.0;
@@ -243,6 +249,7 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
             body.kind = RenderPrimitive::Kind::Polygon;
             body.filled = true;
             body.color = layerColor(padLayer);
+            body.layer = padLayer;
             body.net = pad.net;
             body.selectable = true;
             for (const auto& corner : {Point{-halfW, -halfH}, Point{halfW, -halfH},
@@ -272,6 +279,7 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
         ring.radius = std::max(via.diameter, 0.0) / 2.0 * view.unit;
         ring.filled = true;
         ring.color = layerColor(74);
+        ring.layer = 74;
         ring.opacity = 0.9;
         ring.net = via.net;
         ring.selectable = true;
@@ -293,6 +301,7 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
             RenderPrimitive text;
             text.kind = RenderPrimitive::Kind::Text;
             text.color = layerColor(label.layer);
+            text.layer = label.layer;
             text.text = label.text;
             text.fontSize = label.height * view.unit;
             text.x = view.x(label.x);
@@ -310,6 +319,9 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
             RenderPrimitive text;
             text.kind = RenderPrimitive::Kind::Text;
             text.color = 0xf5d76e;
+            std::string layerText = component.layer;
+            for (char& c : layerText) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            text.layer = layerText.find("BOTTOM") != std::string::npos ? 32 : 1;
             text.text = component.designator;
             text.fontSize = fontSize;
             text.x = view.x(component.x);

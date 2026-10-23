@@ -259,8 +259,24 @@ void MainWindow::createActions() {
     measureAction_->setToolTip(tr("Measure between two points, snapping to pads, vias and track "
                                   "ends  (M)"));
     connect(measureAction_, &QAction::toggled, this, [this](bool on) {
-        if (boardView_ != nullptr) boardView_->setMeasureMode(on);
+        if (boardView_ != nullptr) {
+            if (on) boardView_->setThreeD(false);
+            boardView_->setMeasureMode(on);
+        }
         if (on) statusBar()->showMessage(tr("Measure: click two points, Esc to finish"), 6000);
+    });
+
+    threeDAction_ = new QAction(pcbv::gui::threeDIcon(), tr("3&D view"), this);
+    threeDAction_->setCheckable(true);
+    threeDAction_->setShortcut(QKeySequence(QStringLiteral("3")));
+    threeDAction_->setToolTip(tr("Simple 3D preview of the board: drag to rotate, wheel to zoom  "
+                                 "(3)"));
+    connect(threeDAction_, &QAction::toggled, this, [this](bool on) {
+        if (boardView_ == nullptr) return;
+        if (on && measureAction_ != nullptr && measureAction_->isChecked()) {
+            measureAction_->setChecked(false);
+        }
+        boardView_->setThreeD(on);
     });
 
     zoomPartAction_ = new QAction(tr("Zoom to selected &part"), this);
@@ -385,6 +401,7 @@ void MainWindow::createMenus() {
     viewMenu->addSeparator();
     viewMenu->addAction(fitAction_);
     viewMenu->addAction(zoomPartAction_);
+    viewMenu->addAction(threeDAction_);
     viewMenu->addSeparator();
     viewMenu->addAction(summaryAction_);
 
@@ -401,6 +418,7 @@ void MainWindow::createMenus() {
                                     "<tr><td><b>Ctrl++ / Ctrl+-</b></td><td>zoom the board</td></tr>"
                                     "<tr><td><b>Ctrl+0</b></td><td>fit the board in the window</td></tr>"
                                     "<tr><td><b>M</b></td><td>measure between two points</td></tr>"
+                                    "<tr><td><b>3</b></td><td>3D preview (Esc returns)</td></tr>"
                                     "<tr><td><b>Z</b></td><td>zoom to the selected part</td></tr>"
                                     "<tr><td><b>Ctrl+P</b></td><td>print the board at 1:1</td></tr>"
                                     "<tr><td><b>Click a track or pad</b></td><td>highlight that net</td></tr>"
@@ -576,6 +594,13 @@ void MainWindow::createComponentTable() {
     boardView_ = new BoardView(tabs_);
     connect(boardView_, &BoardView::componentClicked, this, &MainWindow::selectComponentByIndex);
     connect(boardView_, &BoardView::netClicked, this, &MainWindow::selectNet);
+    connect(boardView_, &BoardView::threeDChanged, this, [this](bool on) {
+        if (threeDAction_ == nullptr || threeDAction_->isChecked() == on) return;
+        QSignalBlocker blocker(threeDAction_);
+        threeDAction_->setChecked(on);
+        if (on) statusBar()->showMessage(tr("3D view: drag to rotate, wheel to zoom, Esc to leave"),
+                                         6000);
+    });
     connect(boardView_, &BoardView::measureChanged, this, [this](const QString& text) {
         if (text.isEmpty()) {
             statusBar()->clearMessage();
@@ -656,6 +681,7 @@ void MainWindow::createToolBar() {
                                Named{zoomInAction_, "Zoom in"},
                                Named{fitAction_, "Fit board"},
                                Named{measureAction_, "Measure"},
+                               Named{threeDAction_, "3D view"},
                                Named{exportAction_, "Export"}}) {
         entry.action->setIconText(QString::fromLatin1(entry.name));
     }
@@ -666,6 +692,7 @@ void MainWindow::createToolBar() {
     toolbar->addAction(zoomInAction_);
     toolbar->addAction(fitAction_);
     toolbar->addAction(measureAction_);
+    toolbar->addAction(threeDAction_);
     toolbar->addSeparator();
     toolbar->addAction(exportAction_);
 
@@ -1131,6 +1158,7 @@ void MainWindow::setDocument(const pcbv::Document& document) {
     showDocumentSummary();
 
     if (measureAction_ != nullptr && measureAction_->isChecked()) measureAction_->setChecked(false);
+    if (threeDAction_ != nullptr && threeDAction_->isChecked()) threeDAction_->setChecked(false);
     if (boardView_ != nullptr) {
         boardView_->setDocument(document_);
         updateBoardOptions();

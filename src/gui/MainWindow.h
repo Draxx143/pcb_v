@@ -123,6 +123,7 @@ private:
     QAction* bomCsvAction_ = nullptr;
     QAction* netlistCsvAction_ = nullptr;
     QAction* measureAction_ = nullptr;
+    QAction* threeDAction_ = nullptr;
     QAction* zoomPartAction_ = nullptr;
     QAction* printAction_ = nullptr;
     QAction* bomHtmlAction_ = nullptr;

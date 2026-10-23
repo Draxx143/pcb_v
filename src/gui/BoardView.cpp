@@ -160,6 +160,14 @@ void BoardView::resizeEvent(QResizeEvent* event) {
 }
 
 void BoardView::wheelEvent(QWheelEvent* event) {
+    if (threeD_) {
+        const int steps = event->angleDelta().y();
+        if (steps == 0) return;
+        threeDZoom_ = std::clamp(threeDZoom_ * (steps > 0 ? 1.12 : 1.0 / 1.12), 0.3, 8.0);
+        update();
+        event->accept();
+        return;
+    }
     if (list_.empty()) return;
     const QPointF anchor = event->position();
     const QPointF before = widgetToBoard(anchor);
@@ -175,6 +183,13 @@ void BoardView::wheelEvent(QWheelEvent* event) {
 }
 
 void BoardView::mousePressEvent(QMouseEvent* event) {
+    if (threeD_ && event->button() == Qt::LeftButton) {
+        rotating_ = true;
+        rotateStart_ = event->pos();
+        setCursor(Qt::ClosedHandCursor);
+        event->accept();
+        return;
+    }
     if (measureMode_ && !document_.bounds.valid) {
         // Without a board outline there is nothing to measure against.
     } else if (measureMode_) {
@@ -238,6 +253,16 @@ void BoardView::mousePressEvent(QMouseEvent* event) {
 void BoardView::mouseMoveEvent(QMouseEvent* event) {
     cursor_ = event->pos();
     cursorInside_ = true;
+    if (threeD_) {
+        if (rotating_) {
+            const QPointF delta = event->pos() - rotateStart_;
+            rotateStart_ = event->pos();
+            yawDeg_ += delta.x() * 0.45;
+            elevationDeg_ = std::clamp(elevationDeg_ - delta.y() * 0.35, 12.0, 88.0);
+            update();
+        }
+        return;
+    }
     if (measureMode_) {
         QPointF snapped;
         QString label;
@@ -262,6 +287,12 @@ void BoardView::mouseMoveEvent(QMouseEvent* event) {
 }
 
 void BoardView::mouseReleaseEvent(QMouseEvent* event) {
+    if (rotating_) {
+        rotating_ = false;
+        unsetCursor();
+        event->accept();
+        return;
+    }
     if (panning_) {
         panning_ = false;
         unsetCursor();
@@ -270,11 +301,22 @@ void BoardView::mouseReleaseEvent(QMouseEvent* event) {
 }
 
 void BoardView::mouseDoubleClickEvent(QMouseEvent* event) {
+    if (threeD_) {
+        resetThreeDCamera();
+        event->accept();
+        return;
+    }
     fitToWindow();
     event->accept();
 }
 
 void BoardView::keyPressEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Escape && threeD_) {
+        // Esc returns to the flat view; the toolbar button follows through the signal.
+        setThreeD(false);
+        event->accept();
+        return;
+    }
     if (event->key() == Qt::Key_Escape && measureMode_ &&
         (hasMeasureStart_ || hasMeasureEnd_)) {
         clearMeasurement();
@@ -463,6 +505,11 @@ void BoardView::paintEvent(QPaintEvent* event) {
                                     : tr("Open an Altium .PcbDoc to see the board here.");
         painter.drawText(rect().adjusted(24, 24, -24, -24),
                          Qt::AlignCenter | Qt::TextWordWrap, message);
+        return;
+    }
+
+    if (threeD_) {
+        paintThreeD(painter);
         return;
     }
 
@@ -861,4 +908,283 @@ void BoardView::drawPrimitives(QPainter& painter, double scale, bool forPrint) c
         }
     }
     painter.setOpacity(1.0);
+}
+
+// ---------------------------------------------------------------------------
+// Simple 3D preview
+// ---------------------------------------------------------------------------
+
+namespace {
+
+constexpr double kPi3D = 3.14159265358979323846;
+
+/// Layers that live on the underside of the board.
+bool isBottomLayer(int layer) {
+    if (layer >= 17 && layer <= 32) return true;             // bottom half + bottom copper
+    return layer == 34 || layer == 36 || layer == 38;        // bottom overlay / paste / solder
+}
+
+} // namespace
+
+void BoardView::setThreeD(bool on) {
+    if (threeD_ == on) return;
+    threeD_ = on;
+    if (on) {
+        setMeasureMode(false);
+        resetThreeDCamera();
+        setCursor(Qt::OpenHandCursor);
+        emit threeDChanged(true);
+    } else {
+        unsetCursor();
+        emit threeDChanged(false);
+    }
+    update();
+}
+
+void BoardView::resetThreeDCamera() {
+    yawDeg_ = -35.0;
+    elevationDeg_ = 52.0;
+    threeDZoom_ = 1.0;
+    update();
+}
+
+void BoardView::paintThreeD(QPainter& painter) {
+    if (list_.empty() || !document_.bounds.valid) return;
+
+    struct Item {
+        QPolygonF polygon;
+        QColor color;
+        bool filled = true;
+        bool line = false;
+        double width = 1.0;
+        double depth = 0.0;
+        QString text;
+        QPointF textPos;
+        double textSize = 0.0;
+    };
+
+    constexpr double kThicknessMm = 1.6;
+    const double unitsPerMm = list_.unitsPerMil > 0.0 ? list_.unitsPerMil / 0.0254 : 1.0;
+
+    // --- board outline in mm, centred on the origin -------------------------
+    std::vector<QPointF> outline;
+    if (document_.geometry.outline.size() >= 3) {
+        for (const auto& point : document_.geometry.outline) {
+            outline.push_back(QPointF(point.x * 0.0254, point.y * 0.0254));
+        }
+    } else {
+        const pcbv::Bounds& bounds = document_.bounds;
+        outline = {QPointF(bounds.minX * 0.0254, bounds.minY * 0.0254),
+                   QPointF(bounds.maxX * 0.0254, bounds.minY * 0.0254),
+                   QPointF(bounds.maxX * 0.0254, bounds.maxY * 0.0254),
+                   QPointF(bounds.minX * 0.0254, bounds.maxY * 0.0254)};
+    }
+    QPointF centre(0.0, 0.0);
+    for (const auto& point : outline) centre += point;
+    centre /= static_cast<double>(outline.size());
+    for (auto& point : outline) point -= centre;
+
+    // --- camera --------------------------------------------------------------
+    const double yaw = yawDeg_ * kPi3D / 180.0;
+    const double elev = elevationDeg_ * kPi3D / 180.0;
+    const double cosYaw = std::cos(yaw), sinYaw = std::sin(yaw);
+    const double cosElev = std::cos(elev), sinElev = std::sin(elev);
+
+    auto project = [&](const QPointF& mm, double z, double& depth) {
+        const double x1 = mm.x() * cosYaw - mm.y() * sinYaw;
+        const double y1 = mm.x() * sinYaw + mm.y() * cosYaw;
+        depth = y1 * cosElev - z * sinElev;
+        return QPointF(x1, -(y1 * sinElev + z * cosElev));
+    };
+
+    double minX = 1e18, maxX = -1e18, minY = 1e18, maxY = -1e18;
+    for (const auto& point : outline) {
+        for (const double z : {0.0, kThicknessMm}) {
+            double depth = 0.0;
+            const QPointF projected = project(point, z, depth);
+            minX = std::min(minX, projected.x());
+            maxX = std::max(maxX, projected.x());
+            minY = std::min(minY, projected.y());
+            maxY = std::max(maxY, projected.y());
+        }
+    }
+    const double spanX = std::max(maxX - minX, 1e-3);
+    const double spanY = std::max(maxY - minY, 1e-3);
+    const double scale =
+        std::min(width() * 0.76 / spanX, height() * 0.76 / spanY) * threeDZoom_;
+    const double originX = width() / 2.0 - (minX + maxX) / 2.0 * scale;
+    const double originY = height() / 2.0 - (minY + maxY) / 2.0 * scale;
+    auto toScreen = [&](const QPointF& point) {
+        return QPointF(originX + point.x() * scale, originY + point.y() * scale);
+    };
+
+    // --- gathering -----------------------------------------------------------
+    std::vector<Item> faceBottom, bottomItems, wallItems, faceTop, topItems;
+
+    auto addFace = [&](std::vector<Item>& bucket, const std::vector<QPointF>& points, double z,
+                       const QColor& color, bool filled, double width, double depthBias) {
+        Item item;
+        item.filled = filled;
+        item.color = color;
+        item.width = width;
+        double depthSum = 0.0;
+        for (const auto& point : points) {
+            double depth = 0.0;
+            item.polygon << toScreen(project(point, z, depth));
+            depthSum += depth;
+        }
+        item.depth = depthSum / std::max<std::size_t>(1, points.size()) + depthBias;
+        bucket.push_back(item);
+    };
+
+    addFace(faceBottom, outline, 0.0, QColor(0x08, 0x0c, 0x11), true, 0.0, 8.0);
+    addFace(faceTop, outline, kThicknessMm, QColor(0x16, 0x20, 0x2b), true, 0.0, -8.0);
+
+    // Side walls, shaded by how much they face the viewer.
+    for (std::size_t i = 0; i < outline.size(); ++i) {
+        const QPointF& a = outline[i];
+        const QPointF& b = outline[(i + 1) % outline.size()];
+        const double edgeAngle = std::atan2(b.y() - a.y(), b.x() - a.x()) + kPi3D / 2.0;
+        const double facing = std::fabs(std::cos(edgeAngle - yaw));
+        const int shade = static_cast<int>(30.0 + 26.0 * facing);   // 30..56
+        double depthA = 0.0;
+        double depthB = 0.0;
+        const QPointF aLow = toScreen(project(a, 0.0, depthA));
+        const QPointF aHigh = toScreen(project(a, kThicknessMm, depthA));
+        const QPointF bLow = toScreen(project(b, 0.0, depthB));
+        const QPointF bHigh = toScreen(project(b, kThicknessMm, depthB));
+        Item quad;
+        quad.polygon << aLow << bLow << bHigh << aHigh;
+        quad.color = QColor(shade, shade + 6, shade + 14);
+        quad.depth = (depthA + depthB) / 2.0;
+        wallItems.push_back(quad);
+    }
+
+    // Primitives: copper, silk, pads and designators, each on its own face.
+    for (const auto& primitive : list_.primitives) {
+        if (primitive.background) continue;
+        const bool bottom = isBottomLayer(primitive.layer);
+        const double z = bottom ? -0.02 : kThicknessMm + 0.02;
+        std::vector<Item>& bucket = bottom ? bottomItems : topItems;
+        const QColor color(static_cast<int>((primitive.color >> 16) & 0xFF),
+                           static_cast<int>((primitive.color >> 8) & 0xFF),
+                           static_cast<int>(primitive.color & 0xFF));
+
+        switch (primitive.kind) {
+            case pcbv::RenderPrimitive::Kind::Polygon: {
+                if (primitive.points.size() < 2) break;
+                std::vector<QPointF> mm;
+                mm.reserve(primitive.points.size());
+                for (const auto& point : primitive.points) {
+                    mm.push_back(QPointF(point.x / unitsPerMm, point.y / unitsPerMm));
+                }
+                addFace(bucket, mm, z, color, primitive.filled,
+                        std::max(primitive.strokeWidth * scale, 0.6), 0.0);
+                break;
+            }
+            case pcbv::RenderPrimitive::Kind::Line: {
+                if (primitive.points.size() < 2) break;
+                double depthA = 0.0, depthB = 0.0;
+                Item item;
+                item.filled = false;
+                item.line = true;
+                item.color = color;
+                item.width = std::max(primitive.strokeWidth * scale, 0.7);
+                item.polygon << toScreen(project(QPointF(primitive.points[0].x / unitsPerMm,
+                                                         primitive.points[0].y / unitsPerMm),
+                                                 z, depthA));
+                item.polygon << toScreen(project(QPointF(primitive.points[1].x / unitsPerMm,
+                                                         primitive.points[1].y / unitsPerMm),
+                                                 z, depthB));
+                item.depth = (depthA + depthB) / 2.0;
+                bucket.push_back(item);
+                break;
+            }
+            case pcbv::RenderPrimitive::Kind::Circle: {
+                if (primitive.radius <= 0.0) break;
+                std::vector<QPointF> mm;
+                const double radiusMm = primitive.radius / unitsPerMm;
+                const QPointF centreMm(primitive.center.x / unitsPerMm,
+                                       primitive.center.y / unitsPerMm);
+                const int steps = 20;
+                for (int i = 0; i < steps; ++i) {
+                    const double angle = 2.0 * kPi3D * i / steps;
+                    mm.push_back(centreMm + QPointF(std::cos(angle), std::sin(angle)) * radiusMm);
+                }
+                addFace(bucket, mm, z, color, primitive.filled, 0.0, 0.0);
+                break;
+            }
+            case pcbv::RenderPrimitive::Kind::Text: {
+                if (primitive.text.empty()) break;
+                double depth = 0.0;
+                Item item;
+                item.filled = false;
+                item.color = color;
+                const QPointF anchor = toScreen(project(QPointF(primitive.x / unitsPerMm,
+                                                                primitive.y / unitsPerMm),
+                                                        z, depth));
+                item.depth = depth;
+                item.textPos = anchor;
+                item.text = QString::fromStdString(primitive.text);
+                item.textSize = std::clamp(primitive.fontSize / unitsPerMm * scale, 6.0, 16.0);
+                bucket.push_back(item);
+                break;
+            }
+        }
+    }
+
+    auto drawBucket = [&painter](std::vector<Item>& bucket) {
+        std::sort(bucket.begin(), bucket.end(), [](const Item& a, const Item& b) {
+            return a.depth > b.depth;  // far to near
+        });
+        for (const auto& item : bucket) {
+            if (!item.text.isEmpty()) {
+                QFont font = painter.font();
+                font.setPixelSize(std::max(static_cast<int>(item.textSize), 6));
+                font.setBold(true);
+                painter.setFont(font);
+                painter.setPen(item.color);
+                painter.drawText(item.textPos + QPointF(0.0, -item.textSize * 0.4), item.text);
+                continue;
+            }
+            if (item.line) {
+                QPen pen(item.color);
+                pen.setWidthF(item.width);
+                pen.setCapStyle(Qt::RoundCap);
+                painter.setPen(pen);
+                painter.setBrush(Qt::NoBrush);
+                painter.drawPolyline(item.polygon);
+                continue;
+            }
+            if (item.filled) {
+                painter.setPen(item.width > 0.0 ? QPen(item.color, item.width) : QPen(Qt::NoPen));
+                painter.setBrush(item.color);
+                painter.drawPolygon(item.polygon);
+            } else {
+                QPen pen(item.color);
+                pen.setWidthF(std::max(item.width, 0.6));
+                painter.setPen(pen);
+                painter.setBrush(Qt::NoBrush);
+                painter.drawPolygon(item.polygon);
+            }
+        }
+    };
+
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    drawBucket(faceBottom);
+    drawBucket(bottomItems);
+    drawBucket(wallItems);
+    drawBucket(faceTop);
+    drawBucket(topItems);
+
+    // Hint line.
+    QFont font = painter.font();
+    font.setPixelSize(12);
+    font.setBold(false);
+    painter.setFont(font);
+    painter.setPen(QColor(0x9a, 0xa0, 0xa6));
+    painter.drawText(rect().adjusted(12, 8, -12, -10), Qt::AlignLeft | Qt::AlignBottom,
+                     tr("3D · drag to rotate · wheel to zoom · double click or Esc for the flat view"));
+    painter.restore();
 }

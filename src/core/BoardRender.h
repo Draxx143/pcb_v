@@ -30,6 +30,7 @@ struct RenderPrimitive {
     double radius = 0.0;             ///< Circle, device units
 
     bool background = false;         ///< the page fill behind the board (not printed)
+    int layer = 1;                   ///< Altium layer id (drives the 3D view's z)
     std::string net;                 ///< net this primitive belongs to ("" = none)
     bool selectable = false;         ///< true for copper primitives (click to highlight)
 

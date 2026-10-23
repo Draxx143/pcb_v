@@ -145,6 +145,16 @@ void measureGlyph(QPainter& painter) {
     }
 }
 
+void threeDGlyph(QPainter& painter) {
+    // An isometric cube: hexagon outline plus the three edges that meet in the middle.
+    const QPolygonF cube({QPointF(10.0, 2.6), QPointF(16.4, 6.4), QPointF(16.4, 13.6),
+                          QPointF(10.0, 17.4), QPointF(3.6, 13.6), QPointF(3.6, 6.4)});
+    painter.drawPolygon(cube);
+    painter.drawLine(QPointF(10.0, 10.0), QPointF(10.0, 17.4));
+    painter.drawLine(QPointF(10.0, 10.0), QPointF(3.6, 6.4));
+    painter.drawLine(QPointF(10.0, 10.0), QPointF(16.4, 6.4));
+}
+
 void printGlyph(QPainter& painter) {
     painter.drawRoundedRect(QRectF(2.8, 7.6, 14.4, 5.6), 1.6, 1.6);
     painter.drawRect(QRectF(5.9, 3.2, 8.2, 4.4));
@@ -161,6 +171,7 @@ QIcon layersIcon() { return buildIcon(layersGlyph); }
 QIcon exportIcon() { return buildIcon(exportGlyph); }
 QIcon measureIcon() { return buildIcon(measureGlyph); }
 QIcon printIcon() { return buildIcon(printGlyph); }
+QIcon threeDIcon() { return buildIcon(threeDGlyph); }
 
 QIcon appIcon() {
     constexpr int size = 64;
