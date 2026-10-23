@@ -421,6 +421,18 @@ void BoardView::paintEvent(QPaintEvent* event) {
         painter.restore();
     }
 
+    // --- board size badge ----------------------------------------------------
+    if (document_.bounds.valid) {
+        const QString size = QStringLiteral("Board %1 × %2 mm")
+                                 .arg(document_.bounds.width() * 0.0254, 0, 'f', 2)
+                                 .arg(document_.bounds.height() * 0.0254, 0, 'f', 2);
+        QFont font = painter.font();
+        font.setPixelSize(12);
+        painter.setFont(font);
+        painter.setPen(QColor(0x9a, 0xa0, 0xa6));
+        painter.drawText(rect().adjusted(10, 8, -10, -24), Qt::AlignRight | Qt::AlignTop, size);
+    }
+
     // --- status overlay ------------------------------------------------------
     if (cursorInside_ && hasDocument_ && document_.bounds.valid) {
         const QPointF mil = widgetToMil(cursor_);
