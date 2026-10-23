@@ -343,6 +343,8 @@ void MainWindow::createMenus() {
                                     "<tr><td><b>Ctrl+Shift+C</b></td><td>export the BOM as CSV</td></tr>"
                                     "<tr><td><b>Ctrl++ / Ctrl+-</b></td><td>zoom the board</td></tr>"
                                     "<tr><td><b>Ctrl+0</b></td><td>fit the board in the window</td></tr>"
+                                    "<tr><td><b>Click a track or pad</b></td><td>highlight that net</td></tr>"
+                                    "<tr><td><b>Esc</b></td><td>clear the net highlight</td></tr>"
                                     "<tr><td><b>Ctrl+Q</b></td><td>quit</td></tr>"
                                     "</table>"));
     });
@@ -679,7 +681,7 @@ void MainWindow::createDockPanels() {
     netsDock_ = new QDockWidget(tr("Nets"), this);
     netsDock_->setObjectName("netsDock");
     netsDock_->setWidget(netsPage);
-    addDockWidget(Qt::LeftDockWidgetArea, netsDock_);
+    addDockWidget(Qt::RightDockWidgetArea, netsDock_);
 
     logDock_ = new QDockWidget(tr("Parser log"), this);
     logDock_->setObjectName("logDock");
@@ -687,11 +689,12 @@ void MainWindow::createDockPanels() {
     addDockWidget(Qt::BottomDockWidgetArea, logDock_);
     resizeDocks({logDock_}, {150}, Qt::Vertical);
 
-    // The three left panels share one tabbed area instead of stacking up.
+    // Structure and Layers share the left side; Nets sits on the right so a net can be
+    // picked while the board stays visible.
     tabifyDockWidget(structureDock_, layersDock_);
-    tabifyDockWidget(layersDock_, netsDock_);
     structureDock_->raise();
-    resizeDocks({structureDock_}, {320}, Qt::Horizontal);
+    resizeDocks({structureDock_, netsDock_}, {320, 300}, Qt::Horizontal);
+    resizeDocks({detailsDock_, netsDock_}, {420, 260}, Qt::Vertical);
 }
 
 // ---------------------------------------------------------------------------
@@ -951,7 +954,13 @@ void MainWindow::highlightNetRow(const QString& net) {
 
 void MainWindow::selectNet(const QString& net) {
     if (boardView_ != nullptr) boardView_->setHighlightNet(net);
-    if (net.isEmpty()) return;
+    if (net.isEmpty()) {
+        if (netsTable_ != nullptr) {
+            QSignalBlocker blocker(netsTable_);
+            netsTable_->clearSelection();
+        }
+        return;
+    }
 
     highlightNetRow(net);
     if (tabs_ != nullptr && boardView_ != nullptr) {

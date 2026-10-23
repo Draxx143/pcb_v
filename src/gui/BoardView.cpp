@@ -3,6 +3,7 @@
 #include "BoardView.h"
 
 #include <QFont>
+#include <QKeyEvent>
 #include <QFontMetricsF>
 #include <QMouseEvent>
 #include <QPolygonF>
@@ -220,6 +221,21 @@ void BoardView::mouseReleaseEvent(QMouseEvent* event) {
 void BoardView::mouseDoubleClickEvent(QMouseEvent* event) {
     fitToWindow();
     event->accept();
+}
+
+void BoardView::keyPressEvent(QKeyEvent* event) {
+    if (event->key() == Qt::Key_Escape) {
+        if (!highlightNet_.isEmpty()) {
+            setHighlightNet(QString());
+            emit netClicked(QString());
+            event->accept();
+            return;
+        }
+        setSelectedComponent(-1);
+        event->accept();
+        return;
+    }
+    QWidget::keyPressEvent(event);
 }
 
 void BoardView::leaveEvent(QEvent* event) {
