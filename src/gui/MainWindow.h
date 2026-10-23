@@ -62,6 +62,7 @@ private:
     void log(const QString& message);
     void setDocument(const pcbv::Document& document);
     void ensureDocumentLoaded();
+    void updateActionStates();
     QString componentDetailsHtml(const pcbv::Component& component) const;
     QString documentSummaryHtml() const;
     QString exportDirectory() const;
@@ -88,6 +89,9 @@ private:
     QAction* copyAction_ = nullptr;
     QAction* summaryAction_ = nullptr;
     QAction* svgAction_ = nullptr;
+    QAction* findAction_ = nullptr;
+    QAction* layersAction_ = nullptr;
+    QAction* exportAction_ = nullptr;
     QAction* zoomInAction_ = nullptr;
     QAction* zoomOutAction_ = nullptr;
     QAction* fitAction_ = nullptr;

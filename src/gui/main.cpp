@@ -3,6 +3,7 @@
 #include <QIcon>
 #include <QStringList>
 
+#include "Icons.h"
 #include "MainWindow.h"
 
 int main(int argc, char* argv[]) {
@@ -11,6 +12,7 @@ int main(int argc, char* argv[]) {
     app.setApplicationDisplayName("PCB Viewer");
     app.setOrganizationName("pcbv");
     app.setApplicationVersion("0.3.0");
+    app.setWindowIcon(pcbv::gui::appIcon());
 
     MainWindow window;
     window.show();

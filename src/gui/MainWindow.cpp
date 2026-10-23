@@ -24,6 +24,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QCoreApplication>
 #include <QPlainTextEdit>
 #include <QPalette>
 #include <QStyleFactory>
@@ -34,17 +35,18 @@
 #include <QTabWidget>
 #include <QTextBrowser>
 #include <QToolBar>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 #include <QUrl>
 #include <QVariant>
 #include <QVBoxLayout>
-#include <QCheckBox>
 #include <QWidget>
 
 #include <cstdint>
 
 #include "BoardView.h"
+#include "Icons.h"
 #include "core/AltiumParser.h"
 #include "core/Export.h"
 
@@ -74,7 +76,7 @@ public:
 } // namespace
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
-    setWindowTitle("PCB Viewer — Altium .PcbDoc / .SchDoc component reader");
+    setWindowTitle("PCB Viewer");
     resize(1500, 900);
     setAcceptDrops(true);
     setDockNestingEnabled(true);
@@ -85,6 +87,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     createActions();
     createMenus();
     createToolBar();
+    updateActionStates();
 
     statusBar()->showMessage(
         tr("Open an Altium .PcbDoc or .SchDoc file (Ctrl+O), or drag & drop it here."));
@@ -138,12 +141,16 @@ QMenu { background: #23262d; border: 1px solid #33383f; padding: 4px; }
 QMenu::item { padding: 6px 22px; border-radius: 4px; }
 QMenu::item:selected { background: #2a5d9f; }
 QMenu::separator { height: 1px; background: #33383f; margin: 4px 8px; }
-QToolBar { background: #23262d; border-bottom: 1px solid #33383f; spacing: 4px; padding: 3px 6px; }
-QToolBar QToolButton { padding: 4px 8px; border-radius: 4px; color: #e3e6ea; }
+QToolBar { background: #23262d; border-bottom: 1px solid #33383f; spacing: 2px; padding: 4px 8px; }
+QToolBar QToolButton { background: transparent; border: 0; border-radius: 5px; padding: 5px 6px; }
 QToolBar QToolButton:hover { background: #2f353e; }
+QToolBar QToolButton:pressed { background: #26476f; }
 QToolBar QToolButton:checked { background: #2a5d9f; }
-QToolBar QToolButton:disabled { color: #6b727c; }
-QToolBar::separator { width: 1px; background: #33383f; margin: 4px 6px; }
+QToolBar QToolButton::menu-indicator { subcontrol-origin: padding; subcontrol-position: bottom right;
+                                       width: 5px; height: 5px; right: 2px; bottom: 1px; }
+QToolBar::separator { width: 1px; background: #33383f; margin: 5px 7px; }
+QMenu::item:disabled { color: #6b727c; }
+QMenu::item:checked { color: #ffffff; font-weight: 600; }
 QTabWidget::pane { border: 1px solid #2c313a; background: #1b1e24; }
 QTabBar::tab { background: #23262d; color: #b0bec5; padding: 6px 16px; border: 1px solid #2c313a;
                border-bottom: 0; border-top-left-radius: 5px; border-top-right-radius: 5px;
@@ -191,19 +198,23 @@ QToolTip { background: #23262d; color: #e3e6ea; border: 1px solid #3a414b; paddi
 // ---------------------------------------------------------------------------
 
 void MainWindow::createActions() {
-    openAction_ = new QAction(tr("&Open PCB / Schematic…"), this);
+    openAction_ = new QAction(pcbv::gui::openIcon(), tr("&Open PCB / Schematic…"), this);
     openAction_->setShortcut(QKeySequence::Open);
+    openAction_->setToolTip(tr("Open an Altium .PcbDoc or .SchDoc document  (Ctrl+O)"));
     openAction_->setStatusTip(tr("Open an Altium .PcbDoc or .SchDoc document"));
     connect(openAction_, &QAction::triggered, this, &MainWindow::openFileDialog);
 
     csvAction_ = new QAction(tr("Export BOM as &CSV…"), this);
     csvAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+C")));
+    csvAction_->setToolTip(tr("BOM as CSV, ready for Excel  (Ctrl+Shift+C)"));
     connect(csvAction_, &QAction::triggered, this, &MainWindow::exportCsv);
 
     jsonAction_ = new QAction(tr("Export as &JSON…"), this);
+    jsonAction_->setToolTip(tr("Full document model as JSON"));
     connect(jsonAction_, &QAction::triggered, this, &MainWindow::exportJson);
 
     htmlAction_ = new QAction(tr("Export &HTML report…"), this);
+    htmlAction_->setToolTip(tr("Printable HTML report of the document"));
     connect(htmlAction_, &QAction::triggered, this, &MainWindow::exportHtml);
 
     copyAction_ = new QAction(tr("&Copy component table"), this);
@@ -211,25 +222,31 @@ void MainWindow::createActions() {
     connect(copyAction_, &QAction::triggered, this, &MainWindow::copyBomToClipboard);
 
     summaryAction_ = new QAction(tr("Document s&ummary"), this);
+    summaryAction_->setShortcut(QKeySequence(QStringLiteral("F5")));
+    summaryAction_->setToolTip(tr("Show the document summary and statistics  (F5)"));
     connect(summaryAction_, &QAction::triggered, this, &MainWindow::showDocumentSummary);
 
     svgAction_ = new QAction(tr("Export board as S&VG…"), this);
+    svgAction_->setToolTip(tr("Scalable drawing of the PCB layers"));
     connect(svgAction_, &QAction::triggered, this, &MainWindow::exportSvg);
 
-    zoomInAction_ = new QAction(tr("Zoom &in"), this);
+    zoomInAction_ = new QAction(pcbv::gui::zoomInIcon(), tr("Zoom &in"), this);
     zoomInAction_->setShortcut(QKeySequence::ZoomIn);
+    zoomInAction_->setToolTip(tr("Zoom in  (Ctrl++)"));
     connect(zoomInAction_, &QAction::triggered, this, [this]() {
         if (boardView_ != nullptr) boardView_->zoomIn();
     });
 
-    zoomOutAction_ = new QAction(tr("Zoom &out"), this);
+    zoomOutAction_ = new QAction(pcbv::gui::zoomOutIcon(), tr("Zoom &out"), this);
     zoomOutAction_->setShortcut(QKeySequence::ZoomOut);
+    zoomOutAction_->setToolTip(tr("Zoom out  (Ctrl+-)"));
     connect(zoomOutAction_, &QAction::triggered, this, [this]() {
         if (boardView_ != nullptr) boardView_->zoomOut();
     });
 
-    fitAction_ = new QAction(tr("&Fit board to window"), this);
+    fitAction_ = new QAction(pcbv::gui::fitIcon(), tr("&Fit board to window"), this);
     fitAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+0")));
+    fitAction_->setToolTip(tr("Fit the whole board in the window  (Ctrl+0)"));
     connect(fitAction_, &QAction::triggered, this, [this]() {
         if (boardView_ != nullptr) boardView_->fitToWindow();
     });
@@ -248,79 +265,100 @@ void MainWindow::createActions() {
     designatorsAction_ = makeLayerAction(tr("Designators"), true);
     mechanicalAction_ = makeLayerAction(tr("Mechanical / keep-out"), false);
 
+    // Toolbar entry points: a layers menu and a single export menu, so the toolbar
+    // stays short and nothing is repeated as a separate button.
+    QMenu* layersMenu = new QMenu(tr("Layers"), this);
+    layersMenu->addAction(topLayerAction_);
+    layersMenu->addAction(bottomLayerAction_);
+    layersMenu->addAction(silkAction_);
+    layersMenu->addAction(padsAction_);
+    layersMenu->addAction(designatorsAction_);
+    layersMenu->addSeparator();
+    layersMenu->addAction(mechanicalAction_);
+
+    layersAction_ = new QAction(pcbv::gui::layersIcon(), tr("&Layers"), this);
+    layersAction_->setToolTip(tr("Show or hide board layers"));
+    layersAction_->setMenu(layersMenu);
+
+    QMenu* exportMenu = new QMenu(tr("Export"), this);
+    exportMenu->addAction(csvAction_);
+    exportMenu->addAction(jsonAction_);
+    exportMenu->addAction(htmlAction_);
+    exportMenu->addAction(svgAction_);
+
+    exportAction_ = new QAction(pcbv::gui::exportIcon(), tr("&Export"), this);
+    exportAction_->setToolTip(tr("Export the BOM, a report or the board drawing"));
+    exportAction_->setMenu(exportMenu);
+
     exitAction_ = new QAction(tr("E&xit"), this);
     exitAction_->setShortcut(QKeySequence::Quit);
     connect(exitAction_, &QAction::triggered, this, &QWidget::close);
 }
 
 void MainWindow::createMenus() {
+    // File: open, one export submenu, quit.
     QMenu* fileMenu = menuBar()->addMenu(tr("&File"));
     fileMenu->addAction(openAction_);
     fileMenu->addSeparator();
-    fileMenu->addAction(csvAction_);
-    fileMenu->addAction(jsonAction_);
-    fileMenu->addAction(htmlAction_);
-    fileMenu->addAction(svgAction_);
-    fileMenu->addSeparator();
-    fileMenu->addAction(copyAction_);
+    QMenu* exportMenu = fileMenu->addMenu(tr("&Export"));
+    exportMenu->addAction(csvAction_);
+    exportMenu->addAction(jsonAction_);
+    exportMenu->addAction(htmlAction_);
+    exportMenu->addAction(svgAction_);
     fileMenu->addSeparator();
     fileMenu->addAction(exitAction_);
 
+    // Edit: find and copy (the shortcuts live on these actions).
+    QMenu* editMenu = menuBar()->addMenu(tr("&Edit"));
+    findAction_ = new QAction(tr("&Find in components"), this);
+    findAction_->setShortcut(QKeySequence::Find);
+    connect(findAction_, &QAction::triggered, this, [this]() {
+        if (filterEdit_ == nullptr) return;
+        filterEdit_->setFocus();
+        filterEdit_->selectAll();
+    });
+    editMenu->addAction(findAction_);
+    editMenu->addAction(copyAction_);
+    addAction(findAction_);
+
+    // View: panel visibility, board fit, summary.
     QMenu* viewMenu = menuBar()->addMenu(tr("&View"));
-    if (structureDock_) viewMenu->addAction(structureDock_->toggleViewAction());
-    if (detailsDock_) viewMenu->addAction(detailsDock_->toggleViewAction());
-    if (logDock_) viewMenu->addAction(logDock_->toggleViewAction());
+    QMenu* panelsMenu = viewMenu->addMenu(tr("&Panels"));
+    if (structureDock_) panelsMenu->addAction(structureDock_->toggleViewAction());
+    if (detailsDock_) panelsMenu->addAction(detailsDock_->toggleViewAction());
+    if (logDock_) panelsMenu->addAction(logDock_->toggleViewAction());
+    viewMenu->addSeparator();
+    viewMenu->addAction(fitAction_);
     viewMenu->addSeparator();
     viewMenu->addAction(summaryAction_);
 
-    QMenu* boardMenu = menuBar()->addMenu(tr("&Board"));
-    boardMenu->addAction(zoomInAction_);
-    boardMenu->addAction(zoomOutAction_);
-    boardMenu->addAction(fitAction_);
-    boardMenu->addSeparator();
-    boardMenu->addAction(topLayerAction_);
-    boardMenu->addAction(bottomLayerAction_);
-    boardMenu->addAction(silkAction_);
-    boardMenu->addAction(padsAction_);
-    boardMenu->addAction(designatorsAction_);
-    boardMenu->addAction(mechanicalAction_);
-    boardMenu->addSeparator();
-    boardMenu->addAction(svgAction_);
-
     QMenu* helpMenu = menuBar()->addMenu(tr("&Help"));
-    QAction* aboutAction = helpMenu->addAction(tr("&About"));
-    connect(aboutAction, &QAction::triggered, this, [this]() {
-        QMessageBox::about(this, tr("About PCB Viewer"),
-                           tr("<h3>PCB Viewer</h3>"
-                              "<p>Altium .PcbDoc / .SchDoc reader — step 1: component list.</p>"
-                              "<p>Reads the OLE2 compound container and Altium's binary record format "
-                              "directly: no Altium installation and no proprietary library required.</p>"
-                              "<p>Coordinates are shown in mm (1 mil = 0.0254 mm).</p>"));
-    });
     QAction* shortcutsAction = helpMenu->addAction(tr("&Keyboard shortcuts"));
     connect(shortcutsAction, &QAction::triggered, this, [this]() {
         QMessageBox::information(this, tr("Keyboard shortcuts"),
-                                 tr("<b>Ctrl+O</b> — open document<br>"
-                                    "<b>Ctrl+Shift+C</b> — export CSV<br>"
-                                    "<b>Ctrl+C</b> — copy component table<br>"
-                                    "<b>Ctrl+F</b> — jump to the filter field<br>"
-                                    "<b>F5</b> — show document summary"));
+                                 tr("<table cellpadding='3'>"
+                                    "<tr><td><b>Ctrl+O</b></td><td>open a document</td></tr>"
+                                    "<tr><td><b>Ctrl+F</b></td><td>jump to the filter field</td></tr>"
+                                    "<tr><td><b>F5</b></td><td>document summary</td></tr>"
+                                    "<tr><td><b>Ctrl+C</b></td><td>copy the component table</td></tr>"
+                                    "<tr><td><b>Ctrl+Shift+C</b></td><td>export the BOM as CSV</td></tr>"
+                                    "<tr><td><b>Ctrl++ / Ctrl+-</b></td><td>zoom the board</td></tr>"
+                                    "<tr><td><b>Ctrl+0</b></td><td>fit the board in the window</td></tr>"
+                                    "<tr><td><b>Ctrl+Q</b></td><td>quit</td></tr>"
+                                    "</table>"));
     });
-
-    QAction* findAction = new QAction(this);
-    findAction->setShortcut(QKeySequence::Find);
-    addAction(findAction);
-    connect(findAction, &QAction::triggered, this, [this]() {
-        if (filterEdit_) {
-            filterEdit_->setFocus();
-            filterEdit_->selectAll();
-        }
+    QAction* aboutAction = helpMenu->addAction(tr("&About"));
+    connect(aboutAction, &QAction::triggered, this, [this]() {
+        QMessageBox::about(this, tr("About PCB Viewer"),
+                           tr("<h3>PCB Viewer %1</h3>"
+                              "<p>Reads Altium <b>.PcbDoc</b> and <b>.SchDoc</b> files directly — both the "
+                              "binary (OLE2) format and the ASCII export — and lists every component "
+                              "with its full parameter set.</p>"
+                              "<p>The <b>Board</b> tab draws copper, pads, vias and silkscreen from the "
+                              "same data, so no Altium installation is required.</p>"
+                              "<p>Coordinates are shown in millimetres (1 mil = 0.0254 mm).</p>")
+                               .arg(QCoreApplication::applicationVersion()));
     });
-
-    QAction* refreshAction = new QAction(this);
-    refreshAction->setShortcut(QKeySequence(QStringLiteral("F5")));
-    addAction(refreshAction);
-    connect(refreshAction, &QAction::triggered, this, &MainWindow::showDocumentSummary);
 }
 
 // ---------------------------------------------------------------------------
@@ -338,14 +376,12 @@ void MainWindow::createComponentTable() {
     layout->setSpacing(6);
 
     QHBoxLayout* filterRow = new QHBoxLayout();
-    QLabel* filterLabel = new QLabel(tr("Filter:"), componentPage);
     filterEdit_ = new QLineEdit(componentPage);
-    filterEdit_->setPlaceholderText(
-        tr("Type a designator, value, footprint, manufacturer … (case-insensitive)"));
+    filterEdit_->setPlaceholderText(tr("Filter by designator, value, footprint, manufacturer…"));
     filterEdit_->setClearButtonEnabled(true);
     tableInfoLabel_ = new QLabel(tr("no document"), componentPage);
-    tableInfoLabel_->setStyleSheet("color:#9aa0a6;");
-    filterRow->addWidget(filterLabel);
+    tableInfoLabel_->setStyleSheet("color:#8a929e;");
+    tableInfoLabel_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
     filterRow->addWidget(filterEdit_, 1);
     filterRow->addWidget(tableInfoLabel_);
     layout->addLayout(filterRow);
@@ -379,10 +415,9 @@ void MainWindow::createComponentTable() {
     layout->addWidget(table_, 1);
     tabs_->addTab(componentPage, tr("Components"));
 
-    // --- tab 2: board drawing ------------------------------------------------
+    // --- tab 2: board drawing (added only for documents that have geometry) ---
     boardView_ = new BoardView(tabs_);
     connect(boardView_, &BoardView::componentClicked, this, &MainWindow::selectComponentByIndex);
-    tabs_->addTab(boardView_, tr("Board"));
 
     setCentralWidget(tabs_);
 }
@@ -391,20 +426,26 @@ void MainWindow::createToolBar() {
     QToolBar* toolbar = addToolBar(tr("Main"));
     toolbar->setObjectName(QStringLiteral("mainToolBar"));
     toolbar->setMovable(false);
-    toolbar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    toolbar->setFloatable(false);
+    toolbar->setIconSize(QSize(20, 20));
+    toolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+
     toolbar->addAction(openAction_);
     toolbar->addSeparator();
     toolbar->addAction(zoomOutAction_);
     toolbar->addAction(zoomInAction_);
     toolbar->addAction(fitAction_);
     toolbar->addSeparator();
-    toolbar->addAction(topLayerAction_);
-    toolbar->addAction(bottomLayerAction_);
-    toolbar->addAction(silkAction_);
-    toolbar->addAction(padsAction_);
-    toolbar->addAction(designatorsAction_);
-    toolbar->addSeparator();
-    toolbar->addAction(csvAction_);
+    toolbar->addAction(layersAction_);
+    toolbar->addAction(exportAction_);
+
+    // Actions that own a menu must open it on a single click (the default is a
+    // long-press "delayed popup", which feels broken for a toolbar button).
+    for (QAction* action : {layersAction_, exportAction_}) {
+        if (auto* button = qobject_cast<QToolButton*>(toolbar->widgetForAction(action))) {
+            button->setPopupMode(QToolButton::InstantPopup);
+        }
+    }
 }
 
 void MainWindow::updateBoardOptions() {
@@ -567,10 +608,15 @@ void MainWindow::setDocument(const pcbv::Document& document) {
     if (boardView_ != nullptr) {
         boardView_->setDocument(document_);
         updateBoardOptions();
-        if (tabs_ != nullptr) {
-            tabs_->setTabText(1, document_.geometry.empty() ? tr("Board (empty)") : tr("Board"));
-            tabs_->setCurrentIndex(document_.geometry.empty() ? 0 : 1);
+
+        const bool hasBoard = !document_.geometry.empty();
+        const int boardTab = tabs_ != nullptr ? tabs_->indexOf(boardView_) : -1;
+        if (hasBoard && boardTab < 0) {
+            tabs_->addTab(boardView_, tr("Board"));
+        } else if (!hasBoard && boardTab >= 0) {
+            tabs_->removeTab(boardTab);
         }
+        if (tabs_ != nullptr) tabs_->setCurrentIndex(hasBoard ? tabs_->indexOf(boardView_) : 0);
     }
 
     log(tr("Opened %1  (%2)").arg(qs(document_.fileName), qs(pcbv::docTypeName(document_.type))));
@@ -592,10 +638,24 @@ void MainWindow::setDocument(const pcbv::Document& document) {
                 .arg(document_.sch.netLabels));
     }
 
-    statusBar()->showMessage(tr("%1 · %2 components · %3")
-                                 .arg(qs(document_.fileName))
-                                 .arg(document_.components.size())
-                                 .arg(qs(document_.formatVersion)));
+    statusBar()->showMessage(tr("%1  ·  %2").arg(qs(document_.fileName),
+                                                 qs(pcbv::docTypeName(document_.type))));
+    updateActionStates();
+}
+
+void MainWindow::updateActionStates() {
+    const bool hasDocument = hasDocument_;
+    const bool hasBoard = hasDocument && boardView_ != nullptr && boardView_->hasGeometry();
+
+    // Document level commands (BOM, reports, summary).
+    for (QAction* action : {csvAction_, jsonAction_, htmlAction_, exportAction_, copyAction_,
+                            summaryAction_}) {
+        if (action != nullptr) action->setEnabled(hasDocument);
+    }
+    // Board level commands only make sense for documents with drawable geometry.
+    for (QAction* action : {svgAction_, fitAction_, zoomInAction_, zoomOutAction_, layersAction_}) {
+        if (action != nullptr) action->setEnabled(hasBoard);
+    }
 }
 
 void MainWindow::ensureDocumentLoaded() {

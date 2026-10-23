@@ -57,6 +57,8 @@ if(PCBV_BUILD_GUI)
             src/gui/main.cpp
             src/gui/BoardView.cpp
             src/gui/BoardView.h
+            src/gui/Icons.cpp
+            src/gui/Icons.h
             src/gui/MainWindow.cpp
             src/gui/MainWindow.h
         )
