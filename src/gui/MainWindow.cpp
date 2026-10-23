@@ -426,9 +426,14 @@ void MainWindow::createComponentTable() {
     layout->addWidget(table_, 1);
     tabs_->addTab(componentPage, tr("Components"));
 
-    // --- tab 2: board drawing (added only for documents that have geometry) ---
+    // --- tab 2: board drawing ------------------------------------------------
+    // The page is always part of the tab widget and only its tab button is hidden
+    // when a document has no geometry. Removing the page instead would reparent the
+    // widget and leave it floating as a stray window.
     boardView_ = new BoardView(tabs_);
     connect(boardView_, &BoardView::componentClicked, this, &MainWindow::selectComponentByIndex);
+    tabs_->addTab(boardView_, tr("Board"));
+    tabs_->setTabVisible(tabs_->indexOf(boardView_), false);
 
     setCentralWidget(tabs_);
 }
@@ -440,6 +445,18 @@ void MainWindow::createToolBar() {
     toolbar->setFloatable(false);
     toolbar->setIconSize(QSize(20, 20));
     toolbar->setToolButtonStyle(Qt::ToolButtonIconOnly);
+
+    // Screen readers and the "..." menu fallback see a real name, not just a glyph.
+    struct Named { QAction* action; const char* name; };
+    for (const Named& entry : {Named{openAction_, "Open document"},
+                               Named{zoomOutAction_, "Zoom out"},
+                               Named{zoomInAction_, "Zoom in"},
+                               Named{fitAction_, "Fit board"},
+                               Named{layersAction_, "Layers"},
+                               Named{exportAction_, "Export"}}) {
+        entry.action->setIconText(QString::fromLatin1(entry.name));
+        entry.action->setAccessibleName(QString::fromLatin1(entry.name));
+    }
 
     toolbar->addAction(openAction_);
     toolbar->addSeparator();
@@ -622,12 +639,10 @@ void MainWindow::setDocument(const pcbv::Document& document) {
 
         const bool hasBoard = !document_.geometry.empty();
         const int boardTab = tabs_ != nullptr ? tabs_->indexOf(boardView_) : -1;
-        if (hasBoard && boardTab < 0) {
-            tabs_->addTab(boardView_, tr("Board"));
-        } else if (!hasBoard && boardTab >= 0) {
-            tabs_->removeTab(boardTab);
+        if (tabs_ != nullptr && boardTab >= 0) {
+            tabs_->setTabVisible(boardTab, hasBoard);
+            tabs_->setCurrentIndex(hasBoard ? boardTab : 0);
         }
-        if (tabs_ != nullptr) tabs_->setCurrentIndex(hasBoard ? tabs_->indexOf(boardView_) : 0);
     }
 
     log(tr("Opened %1  (%2)").arg(qs(document_.fileName), qs(pcbv::docTypeName(document_.type))));

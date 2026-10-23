@@ -11,14 +11,15 @@
 #include <QPixmap>
 #include <QPolygonF>
 
+#include <cmath>
 #include <functional>
 
 namespace pcbv {
 namespace gui {
 namespace {
 
-constexpr int kLogicalSize = 20;
-constexpr qreal kScale = 2.0;  // render at 2x so the icons stay sharp on HiDPI screens
+constexpr qreal kGrid = 20.0;      // every glyph is designed on a 20 x 20 grid
+constexpr qreal kPixelRatio = 2.0; // render at 2x for HiDPI screens
 
 const QColor kIdle(0xcf, 0xd8, 0xdc);
 const QColor kHover(0xff, 0xff, 0xff);
@@ -27,17 +28,20 @@ const QColor kDisabled(0x6b, 0x72, 0x7c);
 
 using Glyph = std::function<void(QPainter&)>;
 
-QPixmap renderGlyph(const Glyph& glyph, const QColor& color) {
-    QPixmap pixmap(static_cast<int>(kLogicalSize * kScale),
-                   static_cast<int>(kLogicalSize * kScale));
-    pixmap.setDevicePixelRatio(kScale);
+/// Renders one glyph at `size` logical pixels. The pixmap carries the device pixel
+/// ratio, so QPainter already works in logical coordinates: only the 20 unit design
+/// grid has to be scaled, never the DPR again (doing both clips the drawing).
+QPixmap renderGlyph(const Glyph& glyph, const QColor& color, int size, qreal pixelRatio) {
+    QPixmap pixmap(static_cast<int>(std::lround(size * pixelRatio)),
+                   static_cast<int>(std::lround(size * pixelRatio)));
+    pixmap.setDevicePixelRatio(pixelRatio);
     pixmap.fill(Qt::transparent);
 
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.scale(kScale, kScale);
+    painter.scale(size / kGrid, size / kGrid);
 
-    QPen pen(color, 1.5);
+    QPen pen(color, 1.55);
     pen.setCapStyle(Qt::RoundCap);
     pen.setJoinStyle(Qt::RoundJoin);
     painter.setPen(pen);
@@ -48,10 +52,14 @@ QPixmap renderGlyph(const Glyph& glyph, const QColor& color) {
 
 QIcon buildIcon(const Glyph& glyph) {
     QIcon icon;
-    icon.addPixmap(renderGlyph(glyph, kIdle), QIcon::Normal, QIcon::Off);
-    icon.addPixmap(renderGlyph(glyph, kHover), QIcon::Active, QIcon::Off);
-    icon.addPixmap(renderGlyph(glyph, kChecked), QIcon::Normal, QIcon::On);
-    icon.addPixmap(renderGlyph(glyph, kDisabled), QIcon::Disabled, QIcon::Off);
+    // Provide the sizes the toolbars and menus ask for, so nothing is upscaled.
+    for (const int size : {16, 20, 24, 32, 48}) {
+        icon.addPixmap(renderGlyph(glyph, kIdle, size, kPixelRatio), QIcon::Normal, QIcon::Off);
+        icon.addPixmap(renderGlyph(glyph, kHover, size, kPixelRatio), QIcon::Active, QIcon::Off);
+        icon.addPixmap(renderGlyph(glyph, kChecked, size, kPixelRatio), QIcon::Normal, QIcon::On);
+        icon.addPixmap(renderGlyph(glyph, kDisabled, size, kPixelRatio), QIcon::Disabled,
+                       QIcon::Off);
+    }
     return icon;
 }
 
@@ -136,13 +144,14 @@ QIcon exportIcon() { return buildIcon(exportGlyph); }
 
 QIcon appIcon() {
     constexpr int size = 64;
-    QPixmap pixmap(size * 2, size * 2);
-    pixmap.setDevicePixelRatio(2.0);
+    constexpr qreal pixelRatio = 2.0;
+    QPixmap pixmap(static_cast<int>(size * pixelRatio), static_cast<int>(size * pixelRatio));
+    pixmap.setDevicePixelRatio(pixelRatio);
     pixmap.fill(Qt::transparent);
 
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.scale(2.0, 2.0);
+    // Painted in 64 x 64 logical units; the device pixel ratio is applied by Qt.
 
     // Board body.
     painter.setPen(QPen(QColor(0x2a, 0x5d, 0x9f), 2.0));
