@@ -30,6 +30,27 @@ jobs:
           name: build-log
           path: build.log
 
+      # The artifact is the full log, but reading it needs a download round trip. Emit
+      # the first compiler errors as annotations so they show up on the commit itself.
+      - name: Annotate compiler errors
+        if: failure() && hashFiles('build.log') != ''
+        run: |
+          set +e
+          grep -E ": (error|fatal error):" build.log | head -12 | while IFS= read -r line; do
+            file="${line%%:*}"
+            rest="${line#*:}"
+            lineno="${rest%%:*}"
+            msg="${rest#*:}"
+            msg="${msg#*:}"
+            msg="${msg//%/%%}"
+            msg="${msg//$'\r'/}"
+            if [[ "$lineno" =~ ^[0-9]+$ && -n "$file" ]]; then
+              echo "::error file=${file},line=${lineno}::${msg}"
+            else
+              echo "::error::${line}"
+            fi
+          done
+
       - name: Verify the Qt6 GUI target was built
         run: |
           test -x ./build/pcbv-gui || { echo "pcbv-gui was not built — Qt6 missing?"; exit 1; }

@@ -9,6 +9,8 @@
 #include "core/Export.h"
 #include "core/Model.h"
 
+class QKeyEvent;
+
 class BoardView : public QWidget {
     Q_OBJECT
 
@@ -50,6 +52,7 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override;
     void mouseDoubleClickEvent(QMouseEvent* event) override;
     void leaveEvent(QEvent* event) override;
+    void keyPressEvent(QKeyEvent* event) override;
 
 private:
     void rebuild();
