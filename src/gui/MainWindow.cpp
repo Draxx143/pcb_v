@@ -501,13 +501,13 @@ void MainWindow::createComponentTable() {
     compareLayout->setSpacing(6);
 
     QHBoxLayout* compareHeader = new QHBoxLayout();
-    QLabel* compareHint = new QLabel(
+    compareHint_ = new QLabel(
         tr("Use <b>File → Compare with another document…</b> to diff this document against "
            "another revision."),
         comparePage_);
-    compareHint->setStyleSheet("color:#8a929e;");
+    compareHint_->setStyleSheet("color:#8a929e;");
     QPushButton* saveCompareButton = new QPushButton(tr("Save as HTML…"), comparePage_);
-    compareHeader->addWidget(compareHint, 1);
+    compareHeader->addWidget(compareHint_, 1);
     compareHeader->addWidget(saveCompareButton);
     compareLayout->addLayout(compareHeader);
 
@@ -779,6 +779,15 @@ void MainWindow::showComparison(const pcbv::CompareResult& result) {
     if (tabs_ == nullptr || comparePage_ == nullptr || compareView_ == nullptr) return;
     lastComparisonHtml_ = qs(pcbv::compareToHtml(result));
     compareView_->setHtml(lastComparisonHtml_);
+    if (compareHint_ != nullptr) {
+        compareHint_->setText(tr("<b>%1</b> → <b>%2</b> · %3")
+                                  .arg(qs(result.leftName).toHtmlEscaped(),
+                                       qs(result.rightName).toHtmlEscaped(),
+                                       result.identical()
+                                           ? tr("no differences")
+                                           : tr("%1 difference(s)").arg(
+                                                 static_cast<int>(result.differenceCount()))));
+    }
 
     const int index = tabs_->indexOf(comparePage_);
     tabs_->setTabVisible(index, true);

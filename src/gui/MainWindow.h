@@ -91,6 +91,7 @@ private:
     QTableWidget* bomTable_ = nullptr;
     QLabel* bomInfo_ = nullptr;
     QTextBrowser* compareView_ = nullptr;
+    QLabel* compareHint_ = nullptr;
     QWidget* comparePage_ = nullptr;
     QLineEdit* filterEdit_ = nullptr;
     QLabel* tableInfoLabel_ = nullptr;
