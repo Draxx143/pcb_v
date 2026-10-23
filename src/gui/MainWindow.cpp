@@ -340,9 +340,24 @@ void MainWindow::openDocument(const QString& path) {
     QApplication::restoreOverrideCursor();
 
     if (!outcome.ok) {
-        QMessageBox::critical(this, tr("Cannot read document"),
-                              tr("%1\n\n%2").arg(info.fileName(), qs(outcome.error)));
+        QString details = qs(outcome.error);
+        if (!outcome.detected.empty())
+            details += tr("\n\nDetected: %1").arg(qs(outcome.detected));
+        if (!outcome.signature.empty())
+            details += tr("\nFirst bytes: %1").arg(qs(outcome.signature));
+        QMessageBox box(this);
+        box.setIcon(QMessageBox::Critical);
+        box.setWindowTitle(tr("Cannot read document"));
+        box.setText(tr("%1 could not be opened.").arg(info.fileName()));
+        box.setInformativeText(details);
+        if (!outcome.detected.empty())
+            box.setDetailedText(tr("File: %1\nSize: %2 bytes\nDetected: %3\nSignature: %4\n\n%5")
+                                    .arg(info.absoluteFilePath())
+                                    .arg(info.size())
+                                    .arg(qs(outcome.detected), qs(outcome.signature), qs(outcome.error)));
+        box.exec();
         log(tr("ERROR  %1 — %2").arg(info.fileName(), qs(outcome.error)));
+        if (!outcome.detected.empty()) log(tr("       detected: %1").arg(qs(outcome.detected)));
         return;
     }
     setDocument(outcome.document);
@@ -358,6 +373,7 @@ void MainWindow::setDocument(const pcbv::Document& document) {
     showDocumentSummary();
 
     log(tr("Opened %1  (%2)").arg(qs(document_.fileName), qs(pcbv::docTypeName(document_.type))));
+    log(tr("Container: %1").arg(qs(pcbv::containerName(document_.container))));
     log(tr("Format: %1").arg(qs(document_.formatVersion)));
     for (const auto& warning : document_.warnings) log(tr("warning: %1").arg(qs(warning)));
     if (document_.type == pcbv::DocType::PcbDoc) {
@@ -433,6 +449,10 @@ void MainWindow::populateComponents() {
 void MainWindow::populateStructure() {
     structureTree_->clear();
 
+    const bool asciiOnly = document_.structure.empty() && !document_.recordTypes.empty();
+    structureTree_->setHeaderLabels(asciiOnly ? QStringList{tr("Record type"), tr("Count")}
+                                              : QStringList{tr("Stream / storage"), tr("Size")});
+
     struct Builder {
         static void add(QTreeWidgetItem* parent, const pcbv::FileEntry& entry) {
             auto* item = new QTreeWidgetItem(parent);
@@ -452,6 +472,23 @@ void MainWindow::populateStructure() {
     for (const auto& entry : document_.structure) {
         Builder::add(structureTree_->invisibleRootItem(), entry);
     }
+
+    if (asciiOnly) {
+        // ASCII export: no OLE storages — show the record-type histogram instead.
+        int total = 0;
+        for (const auto& entry : document_.recordTypes) {
+            auto* item = new QTreeWidgetItem(structureTree_->invisibleRootItem());
+            item->setText(0, qs(entry.first));
+            item->setText(1, QString::number(entry.second));
+            item->setForeground(1, QColor("#9aa0a6"));
+            total += entry.second;
+        }
+        auto* totalItem = new QTreeWidgetItem(structureTree_->invisibleRootItem());
+        totalItem->setText(0, tr("Total records"));
+        totalItem->setText(1, QString::number(total));
+        totalItem->setForeground(0, QColor("#8ab4f8"));
+    }
+
     structureTree_->resizeColumnToContents(1);
 }
 
@@ -616,11 +653,17 @@ QString MainWindow::documentSummaryHtml() const {
 
     html += "<table style='font-size:13px;border-collapse:collapse'>";
     row(tr("Path"), qs(d.path).toHtmlEscaped());
+    row(tr("Container"), qs(pcbv::containerName(d.container)));
     row(tr("Format"), qs(d.formatVersion).toHtmlEscaped());
     if (!d.boardVersion.empty()) row(tr("Board format"), qs(d.boardVersion));
     if (!d.lastSaved.empty()) row(tr("Last saved"), qs(d.lastSaved));
     row(tr("File size"), formatSize(d.fileSize));
-    row(tr("Root entries"), QString::number(d.structure.size()));
+    if (!d.structure.empty()) row(tr("Root entries"), QString::number(d.structure.size()));
+    if (!d.recordTypes.empty()) {
+        int total = 0;
+        for (const auto& entry : d.recordTypes) total += entry.second;
+        row(tr("Records"), QString::number(total));
+    }
     html += "</table>";
 
     html += "<div style='display:flex;flex-wrap:wrap;gap:8px;margin:16px 0'>";

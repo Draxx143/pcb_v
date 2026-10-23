@@ -89,13 +89,23 @@ std::string toSummaryText(const Document& doc) {
     out << "File        : " << doc.fileName << "\n";
     out << "Path        : " << doc.path << "\n";
     out << "Type        : " << docTypeName(doc.type) << "\n";
+    out << "Container   : " << containerName(doc.container) << "\n";
     out << "Format      : " << doc.formatVersion;
     if (!doc.boardVersion.empty()) out << "  (board format " << doc.boardVersion << ")";
     out << "\n";
     if (!doc.lastSaved.empty()) out << "Last saved  : " << doc.lastSaved << "\n";
     out << "File size   : " << (static_cast<double>(doc.fileSize) / (1024.0 * 1024.0)) << " MB ("
         << doc.fileSize << " bytes)\n";
-    out << "Streams     : " << doc.structure.size() << " root entries\n\n";
+    if (doc.container == Container::CompoundBinary) {
+        out << "Streams     : " << doc.structure.size() << " root entries\n";
+    } else if (!doc.recordTypes.empty()) {
+        out << "Records     :";
+        for (std::size_t i = 0; i < doc.recordTypes.size() && i < 8; ++i) {
+            out << (i == 0 ? " " : ", ") << doc.recordTypes[i].first << "=" << doc.recordTypes[i].second;
+        }
+        out << "\n";
+    }
+    out << "\n";
 
     out << "Components  : " << quantity(doc) << "\n";
 
@@ -156,6 +166,7 @@ std::string toJson(const Document& doc) {
     out << "  \"file\": \"" << jsonEscape(doc.fileName) << "\",\n";
     out << "  \"path\": \"" << jsonEscape(doc.path) << "\",\n";
     out << "  \"type\": \"" << jsonEscape(docTypeName(doc.type)) << "\",\n";
+    out << "  \"container\": \"" << jsonEscape(containerName(doc.container)) << "\",\n";
     out << "  \"format\": \"" << jsonEscape(doc.formatVersion) << "\",\n";
     out << "  \"fileSize\": " << doc.fileSize << ",\n";
     out << "  \"componentCount\": " << quantity(doc) << ",\n";
@@ -258,7 +269,8 @@ std::string toHtml(const Document& doc) {
            "</style>\n</head>\n<body>\n";
     out << "<h1>" << htmlEscape(doc.fileName) << "</h1>\n";
     out << "<div class=\"meta\">" << htmlEscape(docTypeName(doc.type)) << " &middot; "
-        << htmlEscape(doc.formatVersion) << " &middot; " << doc.components.size() << " components</div>\n";
+        << htmlEscape(containerName(doc.container)) << " &middot; " << htmlEscape(doc.formatVersion)
+        << " &middot; " << doc.components.size() << " components</div>\n";
 
     out << "<div class=\"cards\">\n";
     auto card = [&out](const std::string& key, const std::string& value) {

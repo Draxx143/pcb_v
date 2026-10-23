@@ -18,8 +18,12 @@ option(PCBV_BUILD_TESTS "Build the parser smoke test" ON)
 add_library(pcbv_core STATIC
     src/core/CompoundFile.cpp
     src/core/CompoundFile.h
+    src/core/AltiumText.cpp
+    src/core/AltiumText.h
+    src/core/AltiumInternal.h
     src/core/AltiumParser.cpp
     src/core/AltiumParser.h
+    src/core/AsciiParser.cpp
     src/core/Export.cpp
     src/core/Export.h
     src/core/Model.h

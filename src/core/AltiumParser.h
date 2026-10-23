@@ -11,6 +11,11 @@ namespace pcbv {
 struct ParseOutcome {
     bool ok = false;
     std::string error;
+    /// What the container sniffer recognised: "OLE2 compound file (binary Altium)",
+    /// "Altium ASCII export (plain text records)", "ZIP archive", "unrecognised", ...
+    std::string detected;
+    /// Printable preview of the first bytes of the file (helps diagnosing bad files).
+    std::string signature;
     Document document;
 };
 

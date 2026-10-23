@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "CompoundFile.h"
@@ -18,6 +19,15 @@ enum class DocType {
 };
 
 std::string docTypeName(DocType type);
+
+/// Physical container the document was read from.
+enum class Container {
+    Unknown,
+    CompoundBinary, ///< Microsoft OLE2 / Compound File (Altium's native format)
+    AsciiText       ///< Altium's ASCII export ("PCB ASCII File", "Schematic Capture Ascii File")
+};
+
+std::string containerName(Container container);
 
 /// A schematic pin (SchDoc only).
 struct Pin {
@@ -129,14 +139,19 @@ struct Document {
     std::string path;
     std::string fileName;
     DocType type = DocType::Unknown;
+    Container container = Container::Unknown;
     std::string formatVersion;   // "PCB 6.0 Binary File" / "Protel ... Version 5.0"
+    std::string signature;       // printable preview of the first bytes (diagnostics)
     std::string boardVersion;    // VERSION= from Board6 ("5.01")
     std::string lastSaved;       // DATE + TIME from Board6 when available
     std::uint64_t fileSize = 0;
 
     std::vector<Component> components;
     std::vector<Net> nets;
-    std::vector<FileEntry> structure;  // OLE container tree
+    std::vector<FileEntry> structure;  // OLE container tree (binary documents only)
+
+    /// Record-type histogram (ASCII exports): {"Pad", 102}, {"Track", 465}, ...
+    std::vector<std::pair<std::string, int>> recordTypes;
 
     PcbCounts pcb;
     SchCounts sch;

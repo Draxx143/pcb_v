@@ -34,8 +34,18 @@ jobs:
       - name: CLI smoke run (help)
         run: ./build/pcbv-cli --help
 
-      - name: Parse a public Altium sample
+      - name: Parse public Altium binary samples (OLE2)
         run: |
           curl -fsSL "https://raw.githubusercontent.com/issus/AltiumSharp/master/TestData/DAC.SchDoc" -o /tmp/DAC.SchDoc
+          curl -fsSL "https://raw.githubusercontent.com/issus/AltiumSharp/master/TestData/SPI%20Isolator.PcbDoc" -o /tmp/SPI.PcbDoc
           ./build/pcbv-cli --summary /tmp/DAC.SchDoc
-          ./build/pcbv-smoke /tmp/DAC.SchDoc
+          ./build/pcbv-cli --summary /tmp/SPI.PcbDoc
+          ./build/pcbv-smoke /tmp/DAC.SchDoc /tmp/SPI.PcbDoc
+
+      - name: Parse public Altium ASCII samples (plain text)
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/KiCad/kicad-source-mirror/master/qa/data/eeschema/plugins/altium/ticket1303/overview.SchDoc" -o /tmp/ascii.SchDoc
+          curl -fsSL "https://raw.githubusercontent.com/aykevl/things/master/earring-ring/pcb-v3.pcbdoc" -o /tmp/ascii.PcbDoc
+          ./build/pcbv-cli --inspect /tmp/ascii.PcbDoc
+          ./build/pcbv-cli --list /tmp/ascii.PcbDoc
+          ./build/pcbv-smoke /tmp/ascii.SchDoc /tmp/ascii.PcbDoc
