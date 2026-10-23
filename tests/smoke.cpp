@@ -108,6 +108,15 @@ void selfTest() {
         const std::string svg = pcbv::toSvg(ascii.document);
         check(svg.find("<svg") != std::string::npos, "SVG drawing produced for an ASCII board");
         check(svg.find("<line") != std::string::npos, "SVG contains the track");
+        // Several files can be open at once (one tab each): a document has to behave as an
+        // independent value, otherwise switching tabs would share (and corrupt) state.
+        {
+            pcbv::Document copy = ascii.document;
+            copy.components.clear();
+            copy.geometry.tracks.clear();
+            check(ascii.document.components.size() == 1 && ascii.document.geometry.tracks.size() == 1,
+                  "each open tab owns an independent document copy");
+        }
         std::remove(pcbPath.c_str());
 
         const std::string schPath = "/tmp/pcbv-smoke-ascii.SchDoc";

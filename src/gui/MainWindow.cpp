@@ -41,6 +41,7 @@
 #include <QStatusBar>
 #include <QTableWidget>
 #include <QTableWidgetItem>
+#include <QTabBar>
 #include <QTabWidget>
 #include <QTextBrowser>
 #include <QToolBar>
@@ -118,7 +119,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     updateActionStates();
 
     statusBar()->showMessage(
-        tr("Open an Altium .PcbDoc or .SchDoc file (Ctrl+O), or drag & drop it here."));
+        tr("Open Altium .PcbDoc / .SchDoc files (Ctrl+O) or drop them here — one tab per file."));
 
     detailsView_->setHtml(
         "<div style='color:#9aa0a6;font-family:sans-serif;padding:18px'>"
@@ -355,6 +356,30 @@ void MainWindow::createActions() {
     exportAction_->setToolTip(tr("Export the BOM, a report or the board drawing"));
     exportAction_->setMenu(exportMenu);
 
+    closeAction_ = new QAction(tr("&Close document"), this);
+    closeAction_->setShortcut(QKeySequence::Close);
+    closeAction_->setToolTip(tr("Close the current document tab  (Ctrl+W)"));
+    connect(closeAction_, &QAction::triggered, this, &MainWindow::closeCurrentDocument);
+
+    closeAllAction_ = new QAction(tr("Close a&ll documents"), this);
+    closeAllAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+W")));
+    connect(closeAllAction_, &QAction::triggered, this, &MainWindow::closeAllDocuments);
+
+    nextDocumentAction_ = new QAction(tr("&Next document"), this);
+    nextDocumentAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+PageDown")));
+    connect(nextDocumentAction_, &QAction::triggered, this, [this]() {
+        if (slots_.size() < 2) return;
+        activateDocument((active_ + 1) % static_cast<int>(slots_.size()));
+    });
+
+    previousDocumentAction_ = new QAction(tr("&Previous document"), this);
+    previousDocumentAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+PageUp")));
+    connect(previousDocumentAction_, &QAction::triggered, this, [this]() {
+        const int count = static_cast<int>(slots_.size());
+        if (count < 2) return;
+        activateDocument((active_ - 1 + count) % count);
+    });
+
     exitAction_ = new QAction(tr("E&xit"), this);
     exitAction_->setShortcut(QKeySequence::Quit);
     connect(exitAction_, &QAction::triggered, this, &QWidget::close);
@@ -364,6 +389,9 @@ void MainWindow::createMenus() {
     // File: open, one export submenu, quit.
     QMenu* fileMenu = menuBar()->addMenu(tr("&File"));
     fileMenu->addAction(openAction_);
+    fileMenu->addAction(closeAction_);
+    fileMenu->addAction(closeAllAction_);
+    fileMenu->addSeparator();
     fileMenu->addAction(printAction_);
     fileMenu->addAction(compareAction_);
     fileMenu->addSeparator();
@@ -400,6 +428,9 @@ void MainWindow::createMenus() {
     if (logDock_) panelsMenu->addAction(logDock_->toggleViewAction());
     viewMenu->addSeparator();
     viewMenu->addAction(fitAction_);
+    viewMenu->addAction(nextDocumentAction_);
+    viewMenu->addAction(previousDocumentAction_);
+    viewMenu->addSeparator();
     viewMenu->addAction(zoomPartAction_);
     viewMenu->addAction(threeDAction_);
     viewMenu->addSeparator();
@@ -424,6 +455,9 @@ void MainWindow::createMenus() {
                                     "<tr><td><b>Click a track or pad</b></td><td>highlight that net</td></tr>"
                                     "<tr><td><b>Esc</b></td><td>clear the net highlight</td></tr>"
                                     "<tr><td><b>Ctrl+Shift+D</b></td><td>compare with another document</td></tr>"
+                                    "<tr><td><b>Ctrl+W</b></td><td>close the current document tab</td></tr>"
+                                    "<tr><td><b>Ctrl+Shift+W</b></td><td>close every document</td></tr>"
+                                    "<tr><td><b>Ctrl+PageDown / PageUp</b></td><td>next / previous document</td></tr>"
                                     "<tr><td><b>Ctrl+Q</b></td><td>quit</td></tr>"
                                     "</table>"));
     });
@@ -662,7 +696,46 @@ void MainWindow::createComponentTable() {
     tabs_->addTab(comparePage_, tr("Comparison"));
     tabs_->setTabVisible(tabs_->indexOf(comparePage_), false);
 
-    setCentralWidget(tabs_);
+    // --- document tabs -------------------------------------------------------
+    // Several files stay open at the same time; the tab bar picks which one the views
+    // below (and the docks around them) show.
+    docTabs_ = new QTabBar(this);
+    docTabs_->setDocumentMode(true);
+    docTabs_->setExpanding(false);
+    docTabs_->setMovable(true);
+    docTabs_->setTabsClosable(true);
+    docTabs_->setUsesScrollButtons(true);
+    docTabs_->setDrawBase(false);
+    docTabs_->setVisible(false);
+    connect(docTabs_, &QTabBar::currentChanged, this, [this](int index) {
+        if (switching_ || index < 0) return;
+        activateDocument(index);
+    });
+    connect(docTabs_, &QTabBar::tabCloseRequested, this, &MainWindow::closeDocument);
+    // Tabs can be dragged around; keep the document slots in the same order.
+    connect(docTabs_, &QTabBar::tabMoved, this, [this](int from, int to) {
+        const int count = static_cast<int>(slots_.size());
+        if (from == to || from < 0 || to < 0 || from >= count || to >= count) return;
+        DocumentSlot moved = slots_[static_cast<std::size_t>(from)];
+        slots_.erase(slots_.begin() + from);
+        slots_.insert(slots_.begin() + to, moved);
+        if (active_ == from) {
+            active_ = to;
+        } else if (from < active_ && to >= active_) {
+            --active_;
+        } else if (from > active_ && to <= active_) {
+            ++active_;
+        }
+        updateDocumentTitle();
+    });
+
+    QWidget* central = new QWidget(this);
+    QVBoxLayout* centralLayout = new QVBoxLayout(central);
+    centralLayout->setContentsMargins(0, 4, 0, 0);
+    centralLayout->setSpacing(0);
+    centralLayout->addWidget(docTabs_);
+    centralLayout->addWidget(tabs_, 1);
+    setCentralWidget(central);
 }
 
 void MainWindow::createToolBar() {
@@ -1085,10 +1158,10 @@ void MainWindow::createDockPanels() {
 
 void MainWindow::openFileDialog() {
     const QString startDir = lastDirectory_;
-    const QString path = QFileDialog::getOpenFileName(
-        this, tr("Open Altium document"), startDir,
+    const QStringList files = QFileDialog::getOpenFileNames(
+        this, tr("Open Altium documents"), startDir,
         tr("Altium documents (*.PcbDoc *.SchDoc *.pcbdoc *.schdoc);;All files (*)"));
-    if (!path.isEmpty()) openDocument(path);
+    for (const QString& file : files) openDocument(file);
 }
 
 void MainWindow::openDocument(const QString& path) {
@@ -1136,7 +1209,35 @@ void MainWindow::openDocument(const QString& path) {
         if (!outcome.detected.empty()) log(tr("       detected: %1").arg(qs(outcome.detected)));
         return;
     }
-    setDocument(outcome.document);
+    // Already open? Bring that tab forward instead of loading the file twice.
+    const QString absolute = info.absoluteFilePath();
+    for (std::size_t i = 0; i < slots_.size(); ++i) {
+        if (slots_[i].path == absolute) {
+            activateDocument(static_cast<int>(i));
+            return;
+        }
+    }
+
+    DocumentSlot slot;
+    slot.document = outcome.document;
+    slot.path = absolute;
+    slot.title = info.fileName();
+    int counter = 1;
+    while (std::any_of(slots_.begin(), slots_.end(),
+                       [&slot](const DocumentSlot& other) { return other.title == slot.title; })) {
+        slot.title = QStringLiteral("%1 (%2)").arg(info.fileName()).arg(++counter);
+    }
+    slots_.push_back(slot);
+
+    switching_ = true;
+    docTabs_->addTab(slots_.back().title);
+    docTabs_->setTabToolTip(docTabs_->count() - 1, absolute);
+    docTabs_->setVisible(true);
+    docTabs_->setCurrentIndex(static_cast<int>(slots_.size()) - 1);
+    switching_ = false;
+
+    active_ = -1;
+    activateDocument(static_cast<int>(slots_.size()) - 1);
 }
 
 void MainWindow::setDocument(const pcbv::Document& document) {
@@ -1200,14 +1301,183 @@ void MainWindow::setDocument(const pcbv::Document& document) {
     updateActionStates();
 }
 
+// ---------------------------------------------------------------------------
+// Open documents
+// ---------------------------------------------------------------------------
+
+void MainWindow::captureViewState() {
+    if (active_ < 0 || active_ >= static_cast<int>(slots_.size()) || !hasDocument_) return;
+    DocumentSlot& slot = slots_[static_cast<std::size_t>(active_)];
+    if (boardView_ != nullptr) {
+        slot.zoom = boardView_->zoom();
+        slot.pan = boardView_->pan();
+        slot.selectedComponent = boardView_->selectedComponent();
+        slot.highlightNet = boardView_->highlightNet();
+    }
+    if (filterEdit_ != nullptr) slot.componentFilter = filterEdit_->text();
+    if (bomFilter_ != nullptr) slot.bomFilter = bomFilter_->text();
+    if (netlistFilter_ != nullptr) slot.netlistFilter = netlistFilter_->text();
+    if (tabs_ != nullptr) slot.viewTab = tabs_->currentIndex();
+
+    const bool compareShown = tabs_ != nullptr && comparePage_ != nullptr &&
+                              tabs_->isTabVisible(tabs_->indexOf(comparePage_));
+    slot.comparisonHtml = compareShown ? lastComparisonHtml_ : QString();
+    slot.comparisonHint = compareShown && compareHint_ != nullptr ? compareHint_->text() : QString();
+}
+
+void MainWindow::restoreViewState() {
+    if (active_ < 0 || active_ >= static_cast<int>(slots_.size())) return;
+    const DocumentSlot& slot = slots_[static_cast<std::size_t>(active_)];
+
+    if (boardView_ != nullptr) {
+        boardView_->setView(slot.zoom, slot.pan);
+        boardView_->setSelectedComponent(slot.selectedComponent);
+        boardView_->setHighlightNet(slot.highlightNet);
+    }
+    if (filterEdit_ != nullptr) filterEdit_->setText(slot.componentFilter);
+    if (bomFilter_ != nullptr) bomFilter_->setText(slot.bomFilter);
+    if (netlistFilter_ != nullptr) netlistFilter_->setText(slot.netlistFilter);
+
+    // Bring back the part that was selected: the table row drives the details pane and the
+    // board highlight, so restoring it restores the whole selection.
+    if (slot.selectedComponent >= 0) selectComponentByIndex(slot.selectedComponent);
+
+    if (tabs_ != nullptr) {
+        const int tab = std::clamp(slot.viewTab, 0, std::max(tabs_->count() - 1, 0));
+        if (tab >= 0 && tabs_->isTabVisible(tab)) tabs_->setCurrentIndex(tab);
+    }
+    // A document keeps its own comparison; switching away must not show the previous one.
+    if (tabs_ != nullptr && comparePage_ != nullptr) {
+        const int compareTab = tabs_->indexOf(comparePage_);
+        const bool hasComparison = !slot.comparisonHtml.isEmpty();
+        if (!hasComparison) {
+            lastComparisonHtml_.clear();
+            if (compareView_ != nullptr) compareView_->clear();
+            if (compareHint_ != nullptr) compareHint_->clear();
+        }
+        if (compareTab >= 0) tabs_->setTabVisible(compareTab, hasComparison);
+    }
+    if (!slot.comparisonHtml.isEmpty() && tabs_ != nullptr && comparePage_ != nullptr &&
+        compareView_ != nullptr) {
+        lastComparisonHtml_ = slot.comparisonHtml;
+        compareView_->setHtml(slot.comparisonHtml);
+        if (compareHint_ != nullptr) compareHint_->setText(slot.comparisonHint);
+        tabs_->setTabVisible(tabs_->indexOf(comparePage_), true);
+    }
+}
+
+void MainWindow::activateDocument(int index) {
+    if (index < 0 || index >= static_cast<int>(slots_.size())) return;
+
+    switching_ = true;
+    if (docTabs_ != nullptr) docTabs_->setCurrentIndex(index);
+    switching_ = false;
+
+    if (index == active_) return;
+    captureViewState();
+    active_ = index;
+
+    setDocument(slots_[static_cast<std::size_t>(index)].document);
+    restoreViewState();
+    updateDocumentTitle();
+    statusBar()->showMessage(
+        tr("%1 of %2: %3")
+            .arg(active_ + 1)
+            .arg(static_cast<int>(slots_.size()))
+            .arg(slots_[static_cast<std::size_t>(index)].title),
+        4000);
+}
+
+void MainWindow::closeDocument(int index) {
+    if (index < 0 || index >= static_cast<int>(slots_.size())) return;
+    const bool wasActive = index == active_;
+    if (wasActive) captureViewState();
+
+    switching_ = true;
+    if (docTabs_ != nullptr) docTabs_->removeTab(index);
+    switching_ = false;
+    slots_.erase(slots_.begin() + index);
+
+    if (slots_.empty()) {
+        active_ = -1;
+        if (docTabs_ != nullptr) docTabs_->setVisible(false);
+        clearDocument();
+        return;
+    }
+
+    if (!wasActive) {
+        // Closing a background tab keeps the user where they were.
+        if (index < active_) --active_;
+        switching_ = true;
+        if (docTabs_ != nullptr) docTabs_->setCurrentIndex(active_);
+        switching_ = false;
+        updateDocumentTitle();
+        updateActionStates();
+        return;
+    }
+
+    const int next = std::min(index, static_cast<int>(slots_.size()) - 1);
+    active_ = -1;  // force a full reload of the neighbouring document
+    activateDocument(next);
+}
+
+void MainWindow::closeCurrentDocument() {
+    if (active_ >= 0) closeDocument(active_);
+}
+
+void MainWindow::closeAllDocuments() {
+    while (!slots_.empty()) closeDocument(static_cast<int>(slots_.size()) - 1);
+}
+
+void MainWindow::clearDocument() {
+    document_ = pcbv::Document();
+    hasDocument_ = false;
+    lastComparisonHtml_.clear();
+
+    if (boardView_ != nullptr) boardView_->clear();
+    if (table_ != nullptr) table_->setRowCount(0);
+    if (tableInfoLabel_ != nullptr) tableInfoLabel_->setText(tr("no document"));
+    if (bomTable_ != nullptr) bomTable_->setRowCount(0);
+    if (bomInfo_ != nullptr) bomInfo_->setText(tr("no document"));
+    if (netlistTree_ != nullptr) netlistTree_->clear();
+    if (netlistInfo_ != nullptr) netlistInfo_->setText(tr("no document"));
+    if (layersTree_ != nullptr) layersTree_->clear();
+    if (structureTree_ != nullptr) structureTree_->clear();
+    if (detailsView_ != nullptr) {
+        detailsView_->setHtml(
+            tr("<div style='color:#9aa0a6;font-family:sans-serif;padding:18px'>"
+               "No document open.<br>Use <b>File → Open</b> (Ctrl+O) or drop a .PcbDoc / "
+               ".SchDoc here — every file gets its own tab.</div>"));
+    }
+    if (tabs_ != nullptr && comparePage_ != nullptr) {
+        tabs_->setTabVisible(tabs_->indexOf(comparePage_), false);
+    }
+    updateDocumentTitle();
+    updateActionStates();
+}
+
+void MainWindow::updateDocumentTitle() {
+    if (active_ < 0 || active_ >= static_cast<int>(slots_.size())) {
+        setWindowTitle(tr("PCB Viewer"));
+        return;
+    }
+    const DocumentSlot& slot = slots_[static_cast<std::size_t>(active_)];
+    setWindowTitle(slots_.size() > 1
+                       ? tr("%1 — PCB Viewer (%2 of %3)")
+                             .arg(slot.title)
+                             .arg(active_ + 1)
+                             .arg(static_cast<int>(slots_.size()))
+                       : tr("%1 — PCB Viewer").arg(slot.title));
+}
+
 void MainWindow::updateActionStates() {
     const bool hasDocument = hasDocument_;
     const bool hasBoard = hasDocument && boardView_ != nullptr && boardView_->hasGeometry();
 
     // Document level commands (BOM, reports, summary).
-    for (QAction* action : {csvAction_, bomCsvAction_, bomHtmlAction_, netlistCsvAction_, jsonAction_,
-                            htmlAction_,
-                            exportAction_, copyAction_, summaryAction_, compareAction_}) {
+    for (QAction* action : {csvAction_, bomCsvAction_, bomHtmlAction_, netlistCsvAction_,
+                            jsonAction_, htmlAction_, exportAction_, copyAction_,
+                            summaryAction_, compareAction_, closeAction_, closeAllAction_}) {
         if (action != nullptr) action->setEnabled(hasDocument);
     }
     // Board level commands only make sense for documents with drawable geometry.
@@ -1216,6 +1486,10 @@ void MainWindow::updateActionStates() {
         if (action != nullptr) action->setEnabled(hasBoard);
     }
     if (layersDock_ != nullptr) layersDock_->setEnabled(hasBoard);
+
+    const bool many = slots_.size() > 1;
+    if (nextDocumentAction_ != nullptr) nextDocumentAction_->setEnabled(many);
+    if (previousDocumentAction_ != nullptr) previousDocumentAction_->setEnabled(many);
 }
 
 void MainWindow::ensureDocumentLoaded() {
@@ -1934,6 +2208,8 @@ void MainWindow::dragEnterEvent(QDragEnterEvent* event) {
 void MainWindow::dropEvent(QDropEvent* event) {
     const QList<QUrl> urls = event->mimeData()->urls();
     if (urls.isEmpty()) return;
-    openDocument(urls.first().toLocalFile());
+    for (const QUrl& url : urls) {
+        if (url.isLocalFile()) openDocument(url.toLocalFile());
+    }
     event->acceptProposedAction();
 }

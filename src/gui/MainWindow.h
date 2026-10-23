@@ -2,7 +2,10 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QPointF>
 #include <QString>
+
+#include <vector>
 
 #include "core/Compare.h"
 #include "core/Model.h"
@@ -20,6 +23,7 @@ class QPlainTextEdit;
 class QDockWidget;
 class QLabel;
 class QTabWidget;
+class QTabBar;
 class QToolBar;
 
 class BoardView;
@@ -31,7 +35,8 @@ public:
     explicit MainWindow(QWidget* parent = nullptr);
     ~MainWindow() override = default;
 
-    /// Loads a document (also used for the file passed on the command line).
+    /// Loads a document into its own tab (also used for the command line file and drops).
+    /// Opening an already open file just switches to it.
     void openDocument(const QString& path);
 
 protected:
@@ -59,9 +64,29 @@ private slots:
     void showSelectedComponent();
     void showDocumentSummary();
     void selectComponentByIndex(int index);
+    void closeCurrentDocument();
+    void closeAllDocuments();
 
 
 private:
+    /// One open file: the parsed document plus the view state that belongs to it, so
+    /// switching tabs brings the zoom, selection and filters back exactly as they were.
+    struct DocumentSlot {
+        pcbv::Document document;
+        QString path;
+        QString title;
+        double zoom = 1.0;
+        QPointF pan;
+        int selectedComponent = -1;
+        QString highlightNet;
+        QString componentFilter;
+        QString bomFilter;
+        QString netlistFilter;
+        int viewTab = 0;
+        QString comparisonHtml;
+        QString comparisonHint;
+    };
+
     void createActions();
     void createMenus();
     void createToolBar();
@@ -80,14 +105,24 @@ private:
     QString netDetailsHtml(const pcbv::NetSummary& net) const;
     void log(const QString& message);
     void setDocument(const pcbv::Document& document);
+    void activateDocument(int index);
+    void closeDocument(int index);
+    void captureViewState();
+    void restoreViewState();
+    void clearDocument();
+    void updateDocumentTitle();
     void ensureDocumentLoaded();
     void updateActionStates();
     QString componentDetailsHtml(const pcbv::Component& component) const;
     QString documentSummaryHtml() const;
     QString exportDirectory() const;
 
-    pcbv::Document document_;
+    pcbv::Document document_;      ///< the document of the active tab
     bool hasDocument_ = false;
+    std::vector<DocumentSlot> slots_;
+    int active_ = -1;
+    QTabBar* docTabs_ = nullptr;
+    bool switching_ = false;
 
     QTabWidget* tabs_ = nullptr;
     BoardView* boardView_ = nullptr;
@@ -135,6 +170,10 @@ private:
     QAction* fitAction_ = nullptr;
 
     QAction* exitAction_ = nullptr;
+    QAction* closeAction_ = nullptr;
+    QAction* closeAllAction_ = nullptr;
+    QAction* nextDocumentAction_ = nullptr;
+    QAction* previousDocumentAction_ = nullptr;
 
     QString lastDirectory_;
     pcbv::CompareResult lastComparison_;

@@ -122,6 +122,13 @@ QPointF BoardView::widgetToBoard(const QPointF& point) const {
                    (point.y() - cy) / scale + list_.height / 2.0);
 }
 
+void BoardView::setView(double zoom, const QPointF& pan) {
+    zoom_ = std::clamp(zoom, 0.2, 80.0);
+    pan_ = pan;
+    clampPan();
+    update();
+}
+
 void BoardView::clampPan() {
     const double scale = fitScale() * zoom_;
     const double halfW = list_.width * scale / 2.0;

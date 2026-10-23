@@ -51,6 +51,11 @@ public:
 
     bool hasGeometry() const { return !list_.empty(); }
     double zoom() const { return zoom_; }
+    QPointF pan() const { return pan_; }
+    int selectedComponent() const { return selected_; }
+
+    /// Restores a saved camera (used when switching between open documents).
+    void setView(double zoom, const QPointF& pan);
 
 public slots:
     void fitToWindow();
