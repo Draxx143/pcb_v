@@ -7,6 +7,8 @@
 //   pcbv-cli --html report.html board.PcbDoc   export an HTML report
 //   pcbv-cli --svg  board.svg  board.PcbDoc    export the PCB drawing as SVG
 //   pcbv-cli --nets  board.PcbDoc             net table + copper stackup
+//   pcbv-cli --bom   bom.csv  board.PcbDoc    grouped BOM (one line per unique part)
+//   pcbv-cli --compare old.PcbDoc new.PcbDoc  what changed between two revisions
 #include <algorithm>
 #include <cstdio>
 #include <fstream>
@@ -16,6 +18,8 @@
 
 #include "core/AltiumParser.h"
 #include "core/BoardIndex.h"
+#include "core/Bom.h"
+#include "core/Compare.h"
 #include "core/Export.h"
 
 namespace {
@@ -32,6 +36,10 @@ void printUsage() {
         "  pcbv-cli --html <out.html> <file>\n"
         "  pcbv-cli --svg  <out.svg>  <file.PcbDoc>  board drawing (2D, scalable)\n"
         "  pcbv-cli --nets  <file.PcbDoc>            net table, track lengths and the stackup\n"
+        "  pcbv-cli --bom   <out.csv>  <file>        grouped BOM (quantity + designators)\n"
+        "  pcbv-cli --bom-html <out.html> <file>     grouped BOM as a printable page\n"
+        "  pcbv-cli --compare <left> <right>         what was added / removed / changed\n"
+        "  pcbv-cli --compare-html <out.html> <left> <right>\n"
         "  pcbv-cli --details <designator> <file>   print every parameter of one part\n"
         "  pcbv-cli --inspect <file>                show how the file was detected/decoded\n"
         "\n"
@@ -201,14 +209,26 @@ int main(int argc, char** argv) {
     std::string outputPath;
     std::string inputPath;
     std::string detailDesignator;
+    std::string compareLeft;
+    std::string compareRight;
 
     if (mode == "--list" || mode == "--summary" || mode == "--nets") {
         if (args.size() < 2) return fail("missing input file");
         inputPath = args[1];
-    } else if (mode == "--csv" || mode == "--json" || mode == "--html" || mode == "--svg") {
+    } else if (mode == "--csv" || mode == "--json" || mode == "--html" || mode == "--svg" ||
+               mode == "--bom" || mode == "--bom-html") {
         if (args.size() < 3) return fail("usage: " + mode + " <output> <input>");
         outputPath = args[1];
         inputPath = args[2];
+    } else if (mode == "--compare") {
+        if (args.size() < 3) return fail("usage: --compare <left> <right>");
+        compareLeft = args[1];
+        compareRight = args[2];
+    } else if (mode == "--compare-html") {
+        if (args.size() < 4) return fail("usage: --compare-html <output> <left> <right>");
+        outputPath = args[1];
+        compareLeft = args[2];
+        compareRight = args[3];
     } else if (mode == "--inspect") {
         if (args.size() < 2) return fail("usage: --inspect <file>");
         inputPath = args[1];
@@ -219,6 +239,21 @@ int main(int argc, char** argv) {
     } else {
         // Convenience: `pcbv-cli file.PcbDoc` behaves like --list.
         inputPath = mode;
+    }
+
+    if (mode == "--compare" || mode == "--compare-html") {
+        const pcbv::ParseOutcome left = pcbv::parseFile(compareLeft);
+        const pcbv::ParseOutcome right = pcbv::parseFile(compareRight);
+        if (!left.ok) return fail(compareLeft + ": " + left.error);
+        if (!right.ok) return fail(compareRight + ": " + right.error);
+        const pcbv::CompareResult diff = pcbv::compareDocuments(left.document, right.document);
+        if (mode == "--compare") {
+            std::cout << pcbv::compareToText(diff);
+            return 0;
+        }
+        if (!writeFile(outputPath, pcbv::compareToHtml(diff))) return fail("cannot write " + outputPath);
+        std::cout << "wrote " << outputPath << " (" << diff.differenceCount() << " differences)\n";
+        return 0;
     }
 
     const pcbv::ParseOutcome result = pcbv::parseFile(inputPath);
@@ -253,6 +288,16 @@ int main(int argc, char** argv) {
     if (mode == "--html") {
         if (!writeFile(outputPath, pcbv::toHtml(doc))) return fail("cannot write " + outputPath);
         std::cout << "wrote " << outputPath << "\n";
+        return 0;
+    }
+    if (mode == "--bom") {
+        if (!writeFile(outputPath, pcbv::bomToCsv(doc))) return fail("cannot write " + outputPath);
+        std::cout << "wrote " << outputPath << " (" << pcbv::bomSummary(doc) << ")\n";
+        return 0;
+    }
+    if (mode == "--bom-html") {
+        if (!writeFile(outputPath, pcbv::bomToHtml(doc))) return fail("cannot write " + outputPath);
+        std::cout << "wrote " << outputPath << " (" << pcbv::bomSummary(doc) << ")\n";
         return 0;
     }
     if (mode == "--svg") {

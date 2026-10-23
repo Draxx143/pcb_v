@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(PcbAiViewer VERSION 0.4.0 LANGUAGES CXX)
+project(PcbAiViewer VERSION 0.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,6 +16,8 @@ option(PCBV_BUILD_TESTS "Build the parser smoke test" ON)
 # Core: Altium OLE2 + PcbDoc/SchDoc parser (no third-party dependencies)
 # ---------------------------------------------------------------------------
 add_library(pcbv_core STATIC
+    src/core/Compare.cpp
+    src/core/Compare.h
     src/core/CompoundFile.cpp
     src/core/CompoundFile.h
     src/core/AltiumText.cpp
@@ -24,6 +26,8 @@ add_library(pcbv_core STATIC
     src/core/AltiumParser.cpp
     src/core/AltiumParser.h
     src/core/AsciiParser.cpp
+    src/core/Bom.cpp
+    src/core/Bom.h
     src/core/BoardIndex.cpp
     src/core/BoardIndex.h
     src/core/BoardRender.cpp

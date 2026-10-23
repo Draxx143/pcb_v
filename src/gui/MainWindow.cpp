@@ -29,6 +29,7 @@
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include <QPalette>
 #include <QStyleFactory>
 #include <QStringList>
@@ -54,6 +55,7 @@
 #include "Icons.h"
 #include "core/LayerStyle.h"
 #include "core/AltiumParser.h"
+#include "core/Bom.h"
 #include "core/Export.h"
 
 namespace {
@@ -235,6 +237,20 @@ void MainWindow::createActions() {
     csvAction_->setToolTip(tr("BOM as CSV, ready for Excel  (Ctrl+Shift+C)"));
     connect(csvAction_, &QAction::triggered, this, &MainWindow::exportCsv);
 
+    bomCsvAction_ = new QAction(tr("Export &grouped BOM as CSV…"), this);
+    bomCsvAction_->setToolTip(tr("One line per unique part, with quantity and designators"));
+    connect(bomCsvAction_, &QAction::triggered, this, &MainWindow::exportGroupedBomCsv);
+
+    bomHtmlAction_ = new QAction(tr("Export grouped BOM as &HTML…"), this);
+    bomHtmlAction_->setToolTip(tr("Printable grouped BOM for a supplier or a review"));
+    connect(bomHtmlAction_, &QAction::triggered, this, &MainWindow::exportGroupedBomHtml);
+
+    compareAction_ = new QAction(tr("&Compare with another document…"), this);
+    compareAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+D")));
+    compareAction_->setToolTip(
+        tr("Show what was added, removed or changed between two revisions  (Ctrl+Shift+D)"));
+    connect(compareAction_, &QAction::triggered, this, &MainWindow::compareWithFile);
+
     jsonAction_ = new QAction(tr("Export as &JSON…"), this);
     jsonAction_->setToolTip(tr("Full document model as JSON"));
     connect(jsonAction_, &QAction::triggered, this, &MainWindow::exportJson);
@@ -278,6 +294,8 @@ void MainWindow::createActions() {
     });
 
     QMenu* exportMenu = new QMenu(tr("Export"), this);
+    exportMenu->addAction(bomCsvAction_);
+    exportMenu->addAction(bomHtmlAction_);
     exportMenu->addAction(csvAction_);
     exportMenu->addAction(jsonAction_);
     exportMenu->addAction(htmlAction_);
@@ -296,8 +314,11 @@ void MainWindow::createMenus() {
     // File: open, one export submenu, quit.
     QMenu* fileMenu = menuBar()->addMenu(tr("&File"));
     fileMenu->addAction(openAction_);
+    fileMenu->addAction(compareAction_);
     fileMenu->addSeparator();
     QMenu* exportMenu = fileMenu->addMenu(tr("&Export"));
+    exportMenu->addAction(bomCsvAction_);
+    exportMenu->addAction(bomHtmlAction_);
     exportMenu->addAction(csvAction_);
     exportMenu->addAction(jsonAction_);
     exportMenu->addAction(htmlAction_);
@@ -345,6 +366,7 @@ void MainWindow::createMenus() {
                                     "<tr><td><b>Ctrl+0</b></td><td>fit the board in the window</td></tr>"
                                     "<tr><td><b>Click a track or pad</b></td><td>highlight that net</td></tr>"
                                     "<tr><td><b>Esc</b></td><td>clear the net highlight</td></tr>"
+                                    "<tr><td><b>Ctrl+Shift+D</b></td><td>compare with another document</td></tr>"
                                     "<tr><td><b>Ctrl+Q</b></td><td>quit</td></tr>"
                                     "</table>"));
     });
@@ -417,6 +439,51 @@ void MainWindow::createComponentTable() {
     layout->addWidget(table_, 1);
     tabs_->addTab(componentPage, tr("Components"));
 
+    // --- tab 2: grouped BOM --------------------------------------------------
+    QWidget* bomPage = new QWidget(tabs_);
+    QVBoxLayout* bomLayout = new QVBoxLayout(bomPage);
+    bomLayout->setContentsMargins(8, 8, 8, 8);
+    bomLayout->setSpacing(6);
+
+    QHBoxLayout* bomFilterRow = new QHBoxLayout();
+    bomFilter_ = new QLineEdit(bomPage);
+    bomFilter_->setPlaceholderText(tr("Filter by value, designator, footprint or part number…"));
+    bomFilter_->setClearButtonEnabled(true);
+    bomInfo_ = new QLabel(tr("no document"), bomPage);
+    bomInfo_->setStyleSheet("color:#8a929e;");
+    bomInfo_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    bomFilterRow->addWidget(bomFilter_, 1);
+    bomFilterRow->addWidget(bomInfo_);
+    bomLayout->addLayout(bomFilterRow);
+
+    bomTable_ = new QTableWidget(0, 8, bomPage);
+    bomTable_->setHorizontalHeaderLabels({tr("Qty"), tr("Designators"), tr("Value"), tr("Footprint"),
+                                          tr("Manufacturer"), tr("MPN"), tr("Layers"), tr("Note")});
+    bomTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    bomTable_->setSelectionMode(QAbstractItemView::SingleSelection);
+    bomTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    bomTable_->setAlternatingRowColors(true);
+    bomTable_->setSortingEnabled(true);
+    bomTable_->setShowGrid(false);
+    bomTable_->verticalHeader()->setVisible(false);
+    bomTable_->horizontalHeader()->setHighlightSections(false);
+    bomTable_->horizontalHeader()->setStretchLastSection(true);
+    bomTable_->setColumnWidth(0, 52);
+    bomTable_->setColumnWidth(1, 220);
+    bomTable_->setColumnWidth(2, 170);
+    bomTable_->setColumnWidth(3, 230);
+    bomTable_->setColumnWidth(4, 150);
+    bomTable_->setColumnWidth(5, 160);
+    bomTable_->setColumnWidth(6, 90);
+    connect(bomFilter_, &QLineEdit::textChanged, this, &MainWindow::applyBomFilter);
+    // Sorting rearranges the rows, so the filter has to be re-applied afterwards.
+    connect(bomTable_->horizontalHeader(), &QHeaderView::sortIndicatorChanged, this,
+            [this](int, Qt::SortOrder) {
+                applyBomFilter(bomFilter_ != nullptr ? bomFilter_->text() : QString());
+            });
+    bomLayout->addWidget(bomTable_, 1);
+    tabs_->addTab(bomPage, tr("BOM"));
+
     // --- tab 2: board drawing ------------------------------------------------
     // The page is always part of the tab widget and only its tab button is hidden
     // when a document has no geometry. Removing the page instead would reparent the
@@ -426,6 +493,46 @@ void MainWindow::createComponentTable() {
     connect(boardView_, &BoardView::netClicked, this, &MainWindow::selectNet);
     tabs_->addTab(boardView_, tr("Board"));
     tabs_->setTabVisible(tabs_->indexOf(boardView_), false);
+
+    // --- tab 4: revision comparison (only shown once two files were compared) --
+    comparePage_ = new QWidget(tabs_);
+    QVBoxLayout* compareLayout = new QVBoxLayout(comparePage_);
+    compareLayout->setContentsMargins(8, 8, 8, 8);
+    compareLayout->setSpacing(6);
+
+    QHBoxLayout* compareHeader = new QHBoxLayout();
+    QLabel* compareHint = new QLabel(
+        tr("Use <b>File → Compare with another document…</b> to diff this document against "
+           "another revision."),
+        comparePage_);
+    compareHint->setStyleSheet("color:#8a929e;");
+    QPushButton* saveCompareButton = new QPushButton(tr("Save as HTML…"), comparePage_);
+    compareHeader->addWidget(compareHint, 1);
+    compareHeader->addWidget(saveCompareButton);
+    compareLayout->addLayout(compareHeader);
+
+    compareView_ = new QTextBrowser(comparePage_);
+    compareView_->setOpenExternalLinks(false);
+    compareLayout->addWidget(compareView_, 1);
+    connect(saveCompareButton, &QPushButton::clicked, this, [this]() {
+        if (lastComparisonHtml_.isEmpty()) return;
+        const QString suggested =
+            exportDirectory() + "/" +
+            QFileInfo(qs(document_.fileName)).completeBaseName() + "-comparison.html";
+        const QString path = QFileDialog::getSaveFileName(this, tr("Save comparison"), suggested,
+                                                         tr("HTML page (*.html);;All files (*)"));
+        if (path.isEmpty()) return;
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            QMessageBox::warning(this, tr("Save failed"), tr("Cannot write:\n%1").arg(path));
+            return;
+        }
+        file.write(lastComparisonHtml_.toUtf8());
+        file.close();
+        log(tr("Saved comparison: %1").arg(path));
+    });
+    tabs_->addTab(comparePage_, tr("Comparison"));
+    tabs_->setTabVisible(tabs_->indexOf(comparePage_), false);
 
     setCentralWidget(tabs_);
 }
@@ -587,6 +694,101 @@ void MainWindow::exportSvg() {
     file.close();
     log(tr("Exported board SVG: %1").arg(path));
     statusBar()->showMessage(tr("Exported %1").arg(path), 6000);
+}
+
+void MainWindow::exportGroupedBomCsv() {
+    if (!hasDocument_) {
+        ensureDocumentLoaded();
+        return;
+    }
+    const QString suggested = exportDirectory() + "/" +
+                              QFileInfo(qs(document_.fileName)).completeBaseName() + "-bom.csv";
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export grouped BOM"), suggested, tr("CSV file (*.csv);;All files (*)"));
+    if (path.isEmpty()) return;
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QMessageBox::warning(this, tr("Export failed"), tr("Cannot write:\n%1").arg(path));
+        return;
+    }
+    file.write(QByteArray::fromStdString(pcbv::bomToCsv(document_)));
+    file.close();
+    log(tr("Exported grouped BOM: %1 (%2)").arg(path, qs(pcbv::bomSummary(document_))));
+    statusBar()->showMessage(tr("Exported %1").arg(path), 6000);
+}
+
+void MainWindow::exportGroupedBomHtml() {
+    if (!hasDocument_) {
+        ensureDocumentLoaded();
+        return;
+    }
+    const QString suggested = exportDirectory() + "/" +
+                              QFileInfo(qs(document_.fileName)).completeBaseName() + "-bom.html";
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export grouped BOM"), suggested, tr("HTML page (*.html);;All files (*)"));
+    if (path.isEmpty()) return;
+
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QMessageBox::warning(this, tr("Export failed"), tr("Cannot write:\n%1").arg(path));
+        return;
+    }
+    file.write(QByteArray::fromStdString(pcbv::bomToHtml(document_)));
+    file.close();
+    log(tr("Exported grouped BOM page: %1").arg(path));
+    statusBar()->showMessage(tr("Exported %1").arg(path), 6000);
+}
+
+void MainWindow::compareWithFile() {
+    if (!hasDocument_) {
+        ensureDocumentLoaded();
+        return;
+    }
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Compare with another document"), lastDirectory_,
+        tr("Altium documents (*.PcbDoc *.pcbdoc *.SchDoc *.schdoc);;All files (*)"));
+    if (path.isEmpty()) return;
+
+    const pcbv::ParseOutcome outcome = pcbv::parseFile(path.toStdString());
+    if (!outcome.ok) {
+        QMessageBox::warning(this, tr("Cannot compare"),
+                             tr("%1 could not be opened.\n\n%2")
+                                 .arg(QFileInfo(path).fileName(), qs(outcome.error)));
+        log(tr("ERROR  %1 — %2").arg(QFileInfo(path).fileName(), qs(outcome.error)));
+        return;
+    }
+    if (outcome.document.type != document_.type) {
+        QMessageBox::information(
+            this, tr("Cannot compare"),
+            tr("Both documents have to be the same kind — a board can only be compared with "
+               "another board, a schematic with another schematic."));
+        return;
+    }
+
+    lastComparison_ = pcbv::compareDocuments(document_, outcome.document);
+    showComparison(lastComparison_);
+    log(tr("Compared %1 → %2: %3")
+            .arg(qs(document_.fileName), qs(outcome.document.fileName),
+                 lastComparison_.identical()
+                     ? tr("no differences")
+                     : tr("%1 difference(s)").arg(lastComparison_.differenceCount())));
+}
+
+void MainWindow::showComparison(const pcbv::CompareResult& result) {
+    if (tabs_ == nullptr || comparePage_ == nullptr || compareView_ == nullptr) return;
+    lastComparisonHtml_ = qs(pcbv::compareToHtml(result));
+    compareView_->setHtml(lastComparisonHtml_);
+
+    const int index = tabs_->indexOf(comparePage_);
+    tabs_->setTabVisible(index, true);
+    tabs_->setCurrentIndex(index);
+
+    statusBar()->showMessage(
+        result.identical()
+            ? tr("No differences between the two documents")
+            : tr("%1 difference(s) found").arg(static_cast<int>(result.differenceCount())),
+        8000);
 }
 
 void MainWindow::selectComponentByIndex(int index) {
@@ -767,7 +969,13 @@ void MainWindow::setDocument(const pcbv::Document& document) {
     lastDirectory_ = QFileInfo(qs(document_.path)).absolutePath();
 
     setWindowTitle(QString("%1 — PCB Viewer").arg(qs(document_.fileName)));
+
+    // A comparison belongs to the previous pair of documents.
+    if (tabs_ != nullptr && comparePage_ != nullptr) {
+        tabs_->setTabVisible(tabs_->indexOf(comparePage_), false);
+    }
     populateComponents();
+    populateBom();
     populateStructure();
     populateLayers();
     populateNets();
@@ -814,8 +1022,8 @@ void MainWindow::updateActionStates() {
     const bool hasBoard = hasDocument && boardView_ != nullptr && boardView_->hasGeometry();
 
     // Document level commands (BOM, reports, summary).
-    for (QAction* action : {csvAction_, jsonAction_, htmlAction_, exportAction_, copyAction_,
-                            summaryAction_}) {
+    for (QAction* action : {csvAction_, bomCsvAction_, bomHtmlAction_, jsonAction_, htmlAction_,
+                            exportAction_, copyAction_, summaryAction_, compareAction_}) {
         if (action != nullptr) action->setEnabled(hasDocument);
     }
     // Board level commands only make sense for documents with drawable geometry.
@@ -872,6 +1080,66 @@ void MainWindow::populateComponents() {
                                  .arg(document_.components.size())
                                  .arg(pcb ? tr("PCB") : tr("schematic")));
     applyFilter(filterEdit_ ? filterEdit_->text() : QString());
+}
+
+void MainWindow::populateBom() {
+    if (bomTable_ == nullptr) return;
+    const std::vector<pcbv::BomEntry> entries = pcbv::buildBom(document_);
+
+    bomTable_->setSortingEnabled(false);
+    bomTable_->setRowCount(0);
+    bomTable_->setRowCount(static_cast<int>(entries.size()));
+
+    const QColor dim(0x8a, 0x92, 0x9e);
+    for (int row = 0; row < static_cast<int>(entries.size()); ++row) {
+        const pcbv::BomEntry& entry = entries[static_cast<std::size_t>(row)];
+        auto* quantity = new NumericItem(QString::number(entry.quantity), entry.quantity);
+        quantity->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        bomTable_->setItem(row, 0, quantity);
+
+        auto* designators = new QTableWidgetItem(qs(entry.designatorList()));
+        designators->setToolTip(qs(entry.designatorList()));
+        bomTable_->setItem(row, 1, designators);
+
+        bomTable_->setItem(row, 2, new QTableWidgetItem(qs(entry.label())));
+        bomTable_->setItem(row, 3, new QTableWidgetItem(qs(entry.footprint)));
+        bomTable_->setItem(row, 4, new QTableWidgetItem(qs(entry.manufacturer)));
+        bomTable_->setItem(row, 5, new QTableWidgetItem(qs(entry.partNumber)));
+        bomTable_->setItem(row, 6, new QTableWidgetItem(qs(entry.layers)));
+
+        QString note;
+        if (entry.dnp) note = tr("DNP");
+        else if (entry.throughHole) note = tr("THT");
+        auto* noteItem = new QTableWidgetItem(note);
+        if (entry.dnp) noteItem->setForeground(QColor(0xe5, 0x7c, 0x73));
+        bomTable_->setItem(row, 7, noteItem);
+
+        if (entry.dnp) {
+            for (int column = 1; column < 7; ++column) {
+                if (QTableWidgetItem* item = bomTable_->item(row, column)) item->setForeground(dim);
+            }
+        }
+    }
+
+    bomTable_->setSortingEnabled(true);
+    if (bomInfo_ != nullptr) {
+        bomInfo_->setText(document_.components.empty() ? tr("no parts")
+                                                       : qs(pcbv::bomSummary(document_)));
+    }
+    applyBomFilter(bomFilter_ != nullptr ? bomFilter_->text() : QString());
+}
+
+void MainWindow::applyBomFilter(const QString& text) {
+    if (bomTable_ == nullptr) return;
+    const QString needle = text.trimmed();
+    for (int row = 0; row < bomTable_->rowCount(); ++row) {
+        bool match = needle.isEmpty();
+        for (int column = 1; column < 7 && !match; ++column) {
+            const QTableWidgetItem* item = bomTable_->item(row, column);
+            if (item != nullptr && item->text().contains(needle, Qt::CaseInsensitive)) match = true;
+        }
+        bomTable_->setRowHidden(row, !match);
+    }
 }
 
 void MainWindow::populateStructure() {

@@ -12,6 +12,8 @@
 #include "core/AltiumParser.h"
 #include "core/BoardRender.h"
 #include "core/BoardIndex.h"
+#include "core/Bom.h"
+#include "core/Compare.h"
 #include "core/Export.h"
 
 namespace {
@@ -114,6 +116,92 @@ void selfTest() {
             check(u1.partNumber == "NE555P", "ASCII schematic parameter read");
         }
         std::remove(schPath.c_str());
+    }
+
+    // --- grouped BOM and revision comparison --------------------------------
+    {
+        const std::string beforePath = "/tmp/pcbv-smoke-bom-before.PcbDoc";
+        const std::string afterPath = "/tmp/pcbv-smoke-bom-after.PcbDoc";
+        const std::string header =
+            "|RECORD=Board|KIND=Protel_Advanced_PCB|VERSION=5.00|VX0=0mil|VY0=0mil\r\n";
+        const std::string before =
+            header +
+            "|RECORD=Component|ID=0|LAYER=TOP|X=100mil|Y=200mil|SOURCEDESIGNATOR=R1|COMMENT=10k|"
+            "PATTERN=0402\r\n"
+            "|RECORD=Component|ID=1|LAYER=TOP|X=300mil|Y=200mil|SOURCEDESIGNATOR=R2|COMMENT=10k|"
+            "PATTERN=0402\r\n"
+            "|RECORD=Component|ID=2|LAYER=TOP|X=500mil|Y=200mil|SOURCEDESIGNATOR=C1|COMMENT=100n|"
+            "PATTERN=0603\r\n";
+        const std::string after =
+            header +
+            "|RECORD=Component|ID=0|LAYER=TOP|X=100mil|Y=200mil|SOURCEDESIGNATOR=R1|COMMENT=12k|"
+            "PATTERN=0402\r\n"
+            "|RECORD=Component|ID=1|LAYER=TOP|X=300mil|Y=200mil|SOURCEDESIGNATOR=R2|COMMENT=10k|"
+            "PATTERN=0402\r\n"
+            "|RECORD=Component|ID=2|LAYER=TOP|X=700mil|Y=200mil|SOURCEDESIGNATOR=R3|COMMENT=1k|"
+            "PATTERN=0402\r\n";
+        auto write = [](const std::string& path, const std::string& text) {
+            if (FILE* f = std::fopen(path.c_str(), "wb")) {
+                std::fwrite(text.data(), 1, text.size(), f);
+                std::fclose(f);
+            }
+        };
+        write(beforePath, before);
+        write(afterPath, after);
+
+        const pcbv::ParseOutcome left = pcbv::parseFile(beforePath);
+        const pcbv::ParseOutcome right = pcbv::parseFile(afterPath);
+        check(left.ok && right.ok, "BOM fixtures parse");
+        check(left.document.components.size() == 3, "BOM fixture has three parts");
+
+        const std::vector<pcbv::BomEntry> bom = pcbv::buildBom(left.document);
+        check(bom.size() == 2, "identical parts collapse into one BOM line");
+        if (bom.size() == 2) {
+            const pcbv::BomEntry* resistors = nullptr;
+            for (const auto& entry : bom) {
+                if (!entry.designators.empty() && entry.designators.front() == "R1") resistors = &entry;
+            }
+            check(resistors != nullptr && resistors->quantity == 2,
+                  "BOM line counts its designators");
+            check(resistors != nullptr && resistors->designatorList() == "R1, R2",
+                  "designators are listed naturally");
+            check(bom.front().designators.front() == "C1", "BOM lines are ordered by designator");
+        }
+        check(pcbv::bomSummary(left.document) == "2 lines · 3 parts", "BOM summary is correct");
+        check(pcbv::bomToCsv(left.document).find("\"R1, R2\"") != std::string::npos,
+              "BOM CSV quotes the designator list");
+        check(pcbv::bomToHtml(left.document).find("<table") != std::string::npos,
+              "BOM HTML contains a table");
+
+        pcbv::Component dnp;
+        dnp.designator = "R9";
+        dnp.properties.push_back(pcbv::Property{"DNP", "TRUE"});
+        check(pcbv::isDoNotPopulate(dnp), "DNP parameter is recognised");
+        dnp.properties.back().value = "FALSE";
+        check(!pcbv::isDoNotPopulate(dnp), "DNP=FALSE is fitted");
+
+        const pcbv::CompareResult same =
+            pcbv::compareDocuments(left.document, left.document);
+        check(same.identical(), "comparing a document with itself finds no differences");
+
+        const pcbv::CompareResult diff = pcbv::compareDocuments(left.document, right.document);
+        check(diff.added.size() == 1 && diff.added.front().designator == "R3", "R3 reported as added");
+        check(diff.removed.size() == 1 && diff.removed.front().designator == "C1",
+              "C1 reported as removed");
+        check(diff.changed.size() == 1 && diff.changed.front().designator == "R1",
+              "R1 reported as changed");
+        if (diff.changed.size() == 1 && !diff.changed.front().changes.empty()) {
+            const pcbv::FieldChange& change = diff.changed.front().changes.front();
+            check(change.field == "Comment" && change.before == "10k" && change.after == "12k",
+                  "the changed field carries both values");
+        }
+        check(pcbv::compareToText(diff).find("+ R3") != std::string::npos,
+              "text report lists the added part");
+        check(pcbv::compareToHtml(diff).find("R3") != std::string::npos,
+              "HTML report lists the added part");
+
+        std::remove(beforePath.c_str());
+        std::remove(afterPath.c_str());
     }
 
     // Parsing a non-existent file must fail cleanly instead of crashing.
