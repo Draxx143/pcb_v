@@ -1722,14 +1722,28 @@ std::size_t attachModels(Document& document, const Library& library) {
     for (Component& component : document.components) {
         if (component.modelIndex >= 0) continue;   // already has one
         const std::string wanted = !component.footprint.empty() ? component.footprint : component.name;
-        const std::string needle = fingerprint(wanted);
+        std::string needle = fingerprint(wanted);
         if (needle.empty()) continue;
 
         const LibraryFootprint* match = nullptr;
-        for (const LibraryFootprint& footprint : library.footprints) {
-            if (fingerprint(footprint.name) == needle) {
-                match = &footprint;
-                break;
+        auto matchByName = [&library](const std::string& key) -> const LibraryFootprint* {
+            if (key.empty()) return nullptr;
+            for (const LibraryFootprint& footprint : library.footprints) {
+                if (fingerprint(footprint.name) == key) return &footprint;
+            }
+            return nullptr;
+        };
+        match = matchByName(needle);
+        // Some boards put the library item name in the value field (or in the symbolic name)
+        // instead of the footprint field; those are still an exact name, not a guess.
+        if (match == nullptr) {
+            for (const std::string& other : {component.comment, component.name}) {
+                const std::string key = fingerprint(other);
+                if (key.empty() || key == needle) continue;
+                if ((match = matchByName(key)) != nullptr) {
+                    needle = key;
+                    break;
+                }
             }
         }
         if (match == nullptr) {

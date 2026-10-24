@@ -840,6 +840,24 @@ void selfTest() {
                 if (!footprint.models.empty()) ++withModel;
             }
             check(withModel == 12, "every shipped footprint carries a real STEP body");
+
+            // The side of a cylinder has to come out as a tube. It used to be triangulated
+            // as one outline, which collapsed the body of an axial part into a flat blob.
+            if (shipped.library.footprints.size() > 2 &&
+                !shipped.library.footprints[2].models.empty()) {
+                pcbv::StepMesh axial;
+                std::string axialError;
+                check(pcbv::parseStepMesh(shipped.library.footprints[2].models.front().stepText,
+                                          axial, &axialError),
+                      "the axial resistor model tessellates");
+                int midBody = 0;
+                for (const auto& triangle : axial.triangles) {
+                    const double zMin = std::min({triangle.a[2], triangle.b[2], triangle.c[2]});
+                    const double zMax = std::max({triangle.a[2], triangle.b[2], triangle.c[2]});
+                    if (zMin > 0.9 && zMax < 1.7) ++midBody;
+                }
+                check(midBody > 30, "the cylinder side is a tube, not a flat disc");
+            }
         }
 
         // A board that names its footprint differently from the library still gets the

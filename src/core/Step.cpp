@@ -258,9 +258,12 @@ void Reader::buildCurve(int edgeCurveId, bool fromStart, std::vector<Vec3d>& out
         const Placement p = placement(circle->args.at(1).refOrZero());
         const double radius = circle->args.at(2).num();
         if (radius > 1e-9) {
-            auto angleOf = [&p, radius](const Vec3d& world) {
+            // The angle of a point on the circle, in radians. (It used to be divided by the
+            // radius, which shortened every partial arc: a cylinder side bounded by arcs
+            // then collapsed into a flat disc.)
+            auto angleOf = [&p](const Vec3d& world) {
                 const Vec3d relative = world - p.origin;
-                return std::atan2(dot(relative, p.y), dot(relative, p.x)) / radius;
+                return std::atan2(dot(relative, p.y), dot(relative, p.x));
             };
             double from = angleOf(start);
             double to = angleOf(end);
@@ -556,14 +559,6 @@ bool Reader::tessellateFace(const Entity& face, StepMesh& mesh, std::string& why
         }
     }
 
-    std::vector<Point2> oriented = projected;
-    if (polygonArea(oriented) < 0.0) std::reverse(oriented.begin(), oriented.end());
-    std::vector<int> indices = triangulate(oriented);
-    if (indices.size() < 3) {
-        ++mesh.skippedFaces;
-        return false;
-    }
-
     auto toWorld = [&surface](const Point2& parameter) {
         const Placement& base = surface.placement;
         switch (surface.kind) {
@@ -591,6 +586,71 @@ bool Reader::tessellateFace(const Entity& face, StepMesh& mesh, std::string& why
         }
     };
 
+    // The side of a cylinder or a cone is bounded by two arcs and two seams, so in
+    // (arc length, height) space its outline is a rectangle: one chain of vertices at the
+    // bottom height, one at the top. Triangulating that outline as a single polygon gives
+    // slivers that collapse into discs (the body of an axial resistor came out as a blob),
+    // so build the strip from the two heights directly.
+    if ((surface.kind == SurfaceKind::Cylinder || surface.kind == SurfaceKind::Cone) &&
+        projected.size() >= 6) {
+        double vMin = 1e18, vMax = -1e18;
+        for (const Point2& pt : projected) {
+            vMin = std::min(vMin, pt.v);
+            vMax = std::max(vMax, pt.v);
+        }
+        const double vTolerance = std::max(1e-6, (vMax - vMin) * 0.02);
+        if (vMax - vMin > vTolerance * 4.0) {
+            int lowCount = 0, highCount = 0;
+            double uMin = 1e18, uMax = -1e18;
+            for (const Point2& pt : projected) {
+                const bool low = pt.v - vMin <= vTolerance;
+                const bool high = vMax - pt.v <= vTolerance;
+                if (low) ++lowCount;
+                if (high) ++highCount;
+                if (low || high) {
+                    uMin = std::min(uMin, pt.u);
+                    uMax = std::max(uMax, pt.u);
+                }
+            }
+            const double sweep = uMax - uMin;
+            if (lowCount >= 2 && highCount >= 2 && sweep > 1e-6) {
+                const double step = std::max(surface.a, 0.05) * kPi / 16.0;
+                const int segments = std::clamp(static_cast<int>(std::ceil(sweep / step)), 2, 128);
+                StepTriangle band;
+                for (int i = 0; i < segments; ++i) {
+                    const double u0 = uMin + sweep * static_cast<double>(i) / segments;
+                    const double u1 = uMin + sweep * static_cast<double>(i + 1) / segments;
+                    const Vec3d a = toWorld(Point2{u0, vMin});
+                    const Vec3d b = toWorld(Point2{u1, vMin});
+                    const Vec3d c = toWorld(Point2{u1, vMax});
+                    const Vec3d d = toWorld(Point2{u0, vMax});
+                    if (norm(cross(b - a, c - a)) > 1e-10) {
+                        band.a[0] = a.x; band.a[1] = a.y; band.a[2] = a.z;
+                        band.b[0] = b.x; band.b[1] = b.y; band.b[2] = b.z;
+                        band.c[0] = c.x; band.c[1] = c.y; band.c[2] = c.z;
+                        mesh.add(band);
+                    }
+                    if (norm(cross(c - a, d - a)) > 1e-10) {
+                        band.a[0] = a.x; band.a[1] = a.y; band.a[2] = a.z;
+                        band.b[0] = c.x; band.b[1] = c.y; band.b[2] = c.z;
+                        band.c[0] = d.x; band.c[1] = d.y; band.c[2] = d.z;
+                        mesh.add(band);
+                    }
+                }
+                ++mesh.faces;
+                return true;
+            }
+        }
+    }
+
+    std::vector<Point2> oriented = projected;
+    if (polygonArea(oriented) < 0.0) std::reverse(oriented.begin(), oriented.end());
+    std::vector<int> indices = triangulate(oriented);
+    if (indices.size() < 3) {
+        ++mesh.skippedFaces;
+        return false;
+    }
+
     StepTriangle triangle;
     for (std::size_t i = 0; i + 2 < indices.size(); i += 3) {
         const Vec3d a = toWorld(projected[static_cast<std::size_t>(indices[i])]);
@@ -605,6 +665,69 @@ bool Reader::tessellateFace(const Entity& face, StepMesh& mesh, std::string& why
     ++mesh.faces;
     return true;
 }
+
+namespace {
+
+/// Picks the geometry part out of a complex entity instance such as
+/// `( BOUNDED_SURFACE() B_SPLINE_SURFACE() B_SPLINE_SURFACE_WITH_KNOTS(...) )` and returns
+/// its argument text. The names are tried most specific first, so a b-spline wins over the
+/// generic `BOUNDED_SURFACE` marker.
+std::string unwrapComplexEntity(const std::string& body, std::string& type) {
+    static const char* kPreferred[] = {
+        "B_SPLINE_SURFACE_WITH_KNOTS", "B_SPLINE_CURVE_WITH_KNOTS",
+        "SURFACE_OF_LINEAR_EXTRUSION", "SURFACE_OF_REVOLUTION",
+        "CYLINDRICAL_SURFACE", "CONICAL_SURFACE", "SPHERICAL_SURFACE", "TOROIDAL_SURFACE",
+        "B_SPLINE_SURFACE",   "B_SPLINE_CURVE", "PLANE", "CIRCLE", "ELLIPSE", "LINE",
+    };
+    struct Part { std::string name; std::string args; };
+    std::vector<Part> parts;
+    std::size_t i = 0;
+    while (i < body.size()) {
+        // A part looks like NAME(...) or NAME().
+        while (i < body.size() && !std::isalnum(static_cast<unsigned char>(body[i])) &&
+               body[i] != '_')
+            ++i;
+        const std::size_t start = i;
+        while (i < body.size() && (std::isalnum(static_cast<unsigned char>(body[i])) ||
+                                   body[i] == '_'))
+            ++i;
+        if (i == start) break;
+        const std::string name = body.substr(start, i - start);
+        std::size_t open = i;
+        while (open < body.size() && body[open] == ' ') ++open;
+        if (open >= body.size() || body[open] != '(') continue;
+        std::size_t scan = open + 1;
+        int depth = 1;
+        while (scan < body.size() && depth > 0) {
+            if (body[scan] == '\'') {
+                ++scan;
+                while (scan < body.size() && body[scan] != '\'') ++scan;
+                if (scan < body.size()) ++scan;
+                continue;
+            }
+            if (body[scan] == '(') ++depth;
+            if (body[scan] == ')') --depth;
+            ++scan;
+        }
+        parts.push_back({name, body.substr(open + 1, scan > open + 1 ? scan - open - 2 : 0)});
+        i = scan;
+    }
+    for (const char* wanted : kPreferred) {
+        for (const Part& part : parts) {
+            if (part.name == wanted) {
+                type = part.name;
+                return part.args;
+            }
+        }
+    }
+    if (!parts.empty()) {
+        type = parts.back().name;
+        return parts.back().args;
+    }
+    return body;
+}
+
+} // namespace
 
 bool Reader::parse(const std::string& text, StepMesh& mesh, std::string* error) {
     // ---- split into entities -------------------------------------------------
@@ -662,7 +785,17 @@ bool Reader::parse(const std::string& text, StepMesh& mesh, std::string* error) 
             if (c == ')') --depth;
             ++scan;
         }
-        const std::string arguments = text.substr(pos + 1, scan > pos + 1 ? scan - pos - 2 : 0);
+        std::string arguments = text.substr(pos + 1, scan > pos + 1 ? scan - pos - 2 : 0);
+        // Some exporters write a complex instance instead of a single entity:
+        //     #12 = ( BOUNDED_SURFACE() CYLINDRICAL_SURFACE('',#13,0.8) );
+        // The geometry lives in one of the parts, so pick the most specific one and use its
+        // arguments; otherwise every such face (the side of an axial resistor body, the can
+        // of an LED, …) would be dropped and the part would render as flat discs only.
+        std::string complexType;
+        if (type.empty()) {
+            arguments = unwrapComplexEntity(arguments, complexType);
+        }
+        if (!complexType.empty()) type = complexType;
         Entity entity;
         entity.id = id;
         entity.type = type;
