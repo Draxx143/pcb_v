@@ -1,0 +1,29 @@
+# Build directories
+build/
+bin/
+lib/
+out/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+
+# Compiled Object files & Binaries
+*.o
+*.obj
+*.so
+*.a
+pcbv-gui
+
+# Archives & Temp files
+*.zip
+*.tar.gz
+temp_extract/
+
+# IDE & OS files
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
