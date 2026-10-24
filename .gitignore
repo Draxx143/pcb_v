@@ -1,29 +1,29 @@
-# Build directories
+# build output
 build/
-bin/
-lib/
-out/
+build-*/
+cmake-build-*/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
-Makefile
-*.cmake
+compile_commands.json
 
-# Compiled Object files & Binaries
-*.o
-*.obj
-*.so
-*.a
-pcbv-gui
-
-# Archives & Temp files
-*.zip
-*.tar.gz
-temp_extract/
-
-# IDE & OS files
+# editor / OS
 .vscode/
 .idea/
 *.swp
-*~
 .DS_Store
+
+# exported reports
+*_bom.csv
+*_report.html
+
+# local sample boards (copy your own Altium files here)
+samples/*.PcbDoc
+samples/*.SchDoc
+samples/*.pcbdoc
+samples/*.schdoc
+samples/*.PcbLib
+samples/*.SchLib
+
+# packaged downloads (built by tools/pack_library.py)
+dist/

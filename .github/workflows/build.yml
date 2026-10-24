@@ -1,0 +1,79 @@
+name: build
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake qt6-base-dev
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPCBV_BUILD_GUI=ON
+
+      - name: Build
+        run: set -o pipefail && cmake --build build --parallel "$(nproc)" 2>&1 | tee build.log
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+
+      # The artifact is the full log, but reading it needs a download round trip. Emit
+      # the first compiler errors as annotations so they show up on the commit itself.
+      - name: Annotate compiler errors
+        if: failure() && hashFiles('build.log') != ''
+        run: |
+          set +e
+          grep -E ": (error|fatal error):" build.log | head -12 | while IFS= read -r line; do
+            file="${line%%:*}"
+            rest="${line#*:}"
+            lineno="${rest%%:*}"
+            msg="${rest#*:}"
+            msg="${msg#*:}"
+            msg="${msg//%/%%}"
+            msg="${msg//$'\r'/}"
+            if [[ "$lineno" =~ ^[0-9]+$ && -n "$file" ]]; then
+              echo "::error file=${file},line=${lineno}::${msg}"
+            else
+              echo "::error::${line}"
+            fi
+          done
+
+      - name: Verify the Qt6 GUI target was built
+        run: |
+          test -x ./build/pcbv-gui || { echo "pcbv-gui was not built — Qt6 missing?"; exit 1; }
+          ls -la ./build/pcbv-gui ./build/pcbv-cli
+
+      - name: Run tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: CLI smoke run (help)
+        run: ./build/pcbv-cli --help
+
+      - name: Parse public Altium binary samples (OLE2)
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/issus/AltiumSharp/master/TestData/DAC.SchDoc" -o /tmp/DAC.SchDoc
+          curl -fsSL "https://raw.githubusercontent.com/issus/AltiumSharp/master/TestData/SPI%20Isolator.PcbDoc" -o /tmp/SPI.PcbDoc
+          ./build/pcbv-cli --summary /tmp/DAC.SchDoc
+          ./build/pcbv-cli --summary /tmp/SPI.PcbDoc
+          ./build/pcbv-smoke /tmp/DAC.SchDoc /tmp/SPI.PcbDoc
+
+      - name: Parse public Altium ASCII samples (plain text)
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/KiCad/kicad-source-mirror/master/qa/data/eeschema/plugins/altium/ticket1303/overview.SchDoc" -o /tmp/ascii.SchDoc
+          curl -fsSL "https://raw.githubusercontent.com/aykevl/things/master/earring-ring/pcb-v3.pcbdoc" -o /tmp/ascii.PcbDoc
+          ./build/pcbv-cli --inspect /tmp/ascii.PcbDoc
+          ./build/pcbv-cli --list /tmp/ascii.PcbDoc
+          ./build/pcbv-smoke /tmp/ascii.SchDoc /tmp/ascii.PcbDoc

@@ -1,0 +1,2 @@
+Put your own Altium .PcbDoc / .SchDoc files in this folder for quick testing.
+They are intentionally ignored by Git (see .gitignore).
