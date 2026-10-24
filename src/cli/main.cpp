@@ -299,6 +299,16 @@ int main(int argc, char** argv) {
         std::cout << pcbv::toSummaryText(doc);
         return 0;
     }
+    if (mode == "--3d") {
+        std::size_t withModel = 0;
+        for (const pcbv::Component& component : doc.components) {
+            if (component.modelIndex >= 0) ++withModel;
+        }
+        if (!doc.components.empty()) {
+            std::cout << "3D: " << withModel << " of " << doc.components.size()
+                      << " part(s) use a real model, the rest get the generated body\n";
+        }
+    }
     if (mode == "--lib") {
         if (result.library.itemCount() == 0) {
             std::cerr << "error: this file is not a library (" << pcbv::docTypeName(doc.type)
