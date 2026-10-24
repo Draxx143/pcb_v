@@ -20,6 +20,7 @@
 #include "core/Recent.h"
 #include "core/Library.h"
 #include "core/Search.h"
+#include "core/ThreeD.h"
 #include "core/Export.h"
 
 namespace {
@@ -491,6 +492,85 @@ void selfTest() {
         }
         check(sawPart && !partOutside,
               "every primitive of the 3D view lands inside the board outline");
+        std::remove(path.c_str());
+    }
+
+    // --- 3D preview ----------------------------------------------------------
+    // The software renderer has to produce a real image: the board face in the mask
+    // colour, bare metal pads, a shaded body and a proper BMP for the CLI.
+    {
+        const std::string path = "/tmp/pcbv-smoke-3d.PcbDoc";
+        std::string text =
+            "|RECORD=Board|KIND=Protel_Advanced_PCB|VERSION=5.00|KIND0=0|VX0=0mil|VY0=0mil|"
+            "KIND1=0|VX1=2000mil|VY1=0mil|KIND2=0|VX2=2000mil|VY2=1500mil|"
+            "KIND3=0|VX3=0mil|VY3=1500mil\r\n"
+            "|RECORD=Component|ID=0|LAYER=TOP|X=1000mil|Y=750mil|PATTERN=SOIC-8|HEIGHT=60mil|"
+            "SOURCEDESIGNATOR=U1\r\n"
+            "|RECORD=Track|LAYER=1|X1=200mil|Y1=200mil|X2=1800mil|Y2=200mil|WIDTH=10mil\r\n";
+        // Two rows of pads, the way a SOIC looks: the body sits between them, so both the
+        // pads and the body have to be visible in the render.
+        for (int row = 0; row < 2; ++row) {
+            for (int i = 0; i < 2; ++i) {
+                const int x = 900 + i * 200;
+                const int y = row == 0 ? 690 : 810;
+                text += "|RECORD=Pad|COMPONENT=0|LAYER=TOP|NAME=" +
+                        std::to_string(row * 2 + i + 1) + "|X=" + std::to_string(x) +
+                        "mil|Y=" + std::to_string(y) + "mil|XSIZE=120mil|YSIZE=120mil\r\n";
+            }
+        }
+        if (FILE* f = std::fopen(path.c_str(), "wb")) {
+            std::fwrite(text.data(), 1, text.size(), f);
+            std::fclose(f);
+        }
+        const pcbv::ParseOutcome parsed = pcbv::parseFile(path);
+        pcbv::BoardRenderOptions renderOptions;
+        renderOptions.hiddenLayers = pcbv::defaultHiddenLayers();
+
+        pcbv::ThreeDView view;
+        view.width = 640;
+        view.height = 400;
+        view.supersample = 1;
+        view.yawDeg = 30.0;
+        view.elevationDeg = 45.0;
+        const pcbv::ThreeDImage image = pcbv::render3D(parsed.document, renderOptions, view);
+        check(image.valid() && image.width == 640 && image.height == 400,
+              "the 3D renderer fills an image buffer");
+        if (image.valid()) {
+            // Count the colours we expect to be on the board.
+            int mask = 0;
+            int metal = 0;
+            int dark = 0;
+            for (const std::uint32_t pixel : image.pixels) {
+                const int r = static_cast<int>((pixel >> 16) & 0xFF);
+                const int g = static_cast<int>((pixel >> 8) & 0xFF);
+                const int b = static_cast<int>(pixel & 0xFF);
+                if (g > r && g > b && g > 40) ++mask;             // green solder mask
+                if (r > 140 && g > 110 && b < 140 && r >= g) ++metal;   // pads
+                if (r < 60 && g < 60 && b < 70) ++dark;           // part bodies / background
+            }
+            check(mask > 20000, "the board is drawn in the solder mask colour");
+            check(metal > 150, "pads are drawn as bare metal");
+            check(dark > 500, "component bodies and the background are shaded");
+            check(image.at(5, 5) == image.at(5, 5) && image.at(-1, -1) == 0,
+                  "pixel access is bounds checked");
+        }
+        // A lower camera must show the board edge (the slab is 1.6 mm thick).
+        pcbv::ThreeDView flat = view;
+        flat.elevationDeg = 6.0;
+        const pcbv::ThreeDImage edge = pcbv::render3D(parsed.document, renderOptions, flat);
+        check(edge.valid(), "an edge on camera still renders");
+
+        const std::string bmp = pcbv::threeDToBmp(image);
+        check(bmp.size() > 54 && bmp[0] == 'B' && bmp[1] == 'M',
+              "the 3D image can be written as a BMP");
+        if (bmp.size() > 54) {
+            const auto byte = [&bmp](std::size_t i) {
+                return static_cast<int>(static_cast<unsigned char>(bmp[i]));
+            };
+            const int headerWidth = byte(18) | (byte(19) << 8) | (byte(20) << 16);
+            const int headerHeight = byte(22) | (byte(23) << 8) | (byte(24) << 16);
+            check(headerWidth == 640 && headerHeight == 400, "the BMP header has the right size");
+        }
         std::remove(path.c_str());
     }
 

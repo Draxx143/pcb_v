@@ -6,6 +6,7 @@
 //   pcbv-cli --json out.json board.PcbDoc      export JSON
 //   pcbv-cli --html report.html board.PcbDoc   export an HTML report
 //   pcbv-cli --svg  board.svg  board.PcbDoc    export the PCB drawing as SVG
+//   pcbv-cli --3d   board.bmp  board.PcbDoc    render the 3D preview
 //   pcbv-cli --nets  board.PcbDoc             net table + copper stackup
 //   pcbv-cli --bom   bom.csv  board.PcbDoc    grouped BOM (one line per unique part)
 //   pcbv-cli --netlist board.PcbDoc           every pad and the net it belongs to
@@ -24,6 +25,7 @@
 #include "core/Netlist.h"
 #include "core/Export.h"
 #include "core/Library.h"
+#include "core/ThreeD.h"
 
 namespace {
 
@@ -38,6 +40,7 @@ void printUsage() {
         "  pcbv-cli --json <out.json> <file>\n"
         "  pcbv-cli --html <out.html> <file>\n"
         "  pcbv-cli --svg  <out.svg>  <file.PcbDoc>  board drawing (2D, scalable)\n"
+        "  pcbv-cli --3d   <out.bmp>  <file.PcbDoc>  3D preview (mask, copper, parts)\n"
         "  pcbv-cli --nets  <file.PcbDoc>            net table, track lengths and the stackup\n"
         "  pcbv-cli --netlist <file.PcbDoc>          connectivity: nets, pads, layers, positions\n"
         "  pcbv-cli --netlist-csv <out.csv> <file>   the same table as CSV\n"
@@ -224,8 +227,8 @@ int main(int argc, char** argv) {
         if (args.size() < 2) return fail("missing input file");
         inputPath = args[1];
     } else if (mode == "--csv" || mode == "--json" || mode == "--html" || mode == "--svg" ||
-               mode == "--bom" || mode == "--bom-html" || mode == "--netlist-csv" ||
-               mode == "--lib-csv") {
+               mode == "--3d" || mode == "--bom" || mode == "--bom-html" ||
+               mode == "--netlist-csv" || mode == "--lib-csv") {
         if (args.size() < 3) return fail("usage: " + mode + " <output> <input>");
         outputPath = args[1];
         inputPath = args[2];
@@ -351,6 +354,29 @@ int main(int argc, char** argv) {
         std::cout << "wrote " << outputPath << " (" << what << ": "
                   << drawing.geometry.tracks.size() << " tracks, " << drawing.geometry.pads.size()
                   << " pads, " << drawing.geometry.vias.size() << " vias)\n";
+        return 0;
+    }
+    if (mode == "--3d") {
+        pcbv::BoardRenderOptions renderOptions;
+        renderOptions.hiddenLayers = pcbv::defaultHiddenLayers();
+        pcbv::Document drawing = doc;
+        std::string what = "board";
+        if (!result.library.footprints.empty()) {
+            drawing = pcbv::footprintDocument(result.library.footprints.front(), doc.fileName);
+            what = "footprint '" + result.library.footprints.front().name + "'";
+        }
+        pcbv::ThreeDView view;
+        view.width = 1600;
+        view.height = 1000;
+        const pcbv::ThreeDImage image = pcbv::render3D(drawing, renderOptions, view);
+        if (!image.valid()) {
+            std::cerr << "error: no PCB geometry in this document (is it a schematic?)\n";
+            return 1;
+        }
+        const std::string bmp = pcbv::threeDToBmp(image);
+        if (!writeFile(outputPath, bmp)) return fail("cannot write " + outputPath);
+        std::cout << "wrote " << outputPath << " (3D " << what << ", " << image.width << "x"
+                  << image.height << ")\n";
         return 0;
     }
     if (mode == "--nets") {

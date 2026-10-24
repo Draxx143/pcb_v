@@ -55,6 +55,7 @@ private slots:
     void exportHtml();
     void copyBomToClipboard();
     void exportSvg();
+    void export3DImage();
     void exportGroupedBomCsv();
     void exportGroupedBomHtml();
     void exportNetlistCsv();
@@ -179,6 +180,7 @@ private:
     QAction* copyAction_ = nullptr;
     QAction* summaryAction_ = nullptr;
     QAction* svgAction_ = nullptr;
+    QAction* threeDImageAction_ = nullptr;
     QAction* bomCsvAction_ = nullptr;
     QAction* netlistCsvAction_ = nullptr;
     QAction* measureAction_ = nullptr;

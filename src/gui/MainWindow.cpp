@@ -277,8 +277,8 @@ void MainWindow::createActions() {
     threeDAction_ = new QAction(pcbv::gui::threeDIcon(), tr("3&D view"), this);
     threeDAction_->setCheckable(true);
     threeDAction_->setShortcut(QKeySequence(QStringLiteral("3")));
-    threeDAction_->setToolTip(tr("Simple 3D preview of the board: drag to rotate, wheel to zoom  "
-                                 "(3)"));
+    threeDAction_->setToolTip(tr("3D preview with solder mask, copper and part bodies: "
+                                 "drag to rotate, wheel to zoom  (3)"));
     connect(threeDAction_, &QAction::toggled, this, [this](bool on) {
         if (boardView_ == nullptr) return;
         if (on && measureAction_ != nullptr && measureAction_->isChecked()) {
@@ -329,6 +329,10 @@ void MainWindow::createActions() {
     svgAction_->setToolTip(tr("Scalable drawing of the PCB layers"));
     connect(svgAction_, &QAction::triggered, this, &MainWindow::exportSvg);
 
+    threeDImageAction_ = new QAction(tr("Export 3D &view as PNG…"), this);
+    threeDImageAction_->setToolTip(tr("Render the board in 3D (mask, copper and parts) to a PNG"));
+    connect(threeDImageAction_, &QAction::triggered, this, &MainWindow::export3DImage);
+
     zoomInAction_ = new QAction(pcbv::gui::zoomInIcon(), tr("Zoom &in"), this);
     zoomInAction_->setShortcut(QKeySequence::ZoomIn);
     zoomInAction_->setToolTip(tr("Zoom in  (Ctrl++)"));
@@ -358,6 +362,7 @@ void MainWindow::createActions() {
     exportMenu->addAction(jsonAction_);
     exportMenu->addAction(htmlAction_);
     exportMenu->addAction(svgAction_);
+    exportMenu->addAction(threeDImageAction_);
 
     exportAction_ = new QAction(pcbv::gui::exportIcon(), tr("&Export"), this);
     exportAction_->setToolTip(tr("Export the BOM, a report or the board drawing"));
@@ -416,6 +421,7 @@ void MainWindow::createMenus() {
     exportMenu->addAction(jsonAction_);
     exportMenu->addAction(htmlAction_);
     exportMenu->addAction(svgAction_);
+    exportMenu->addAction(threeDImageAction_);
     fileMenu->addSeparator();
     fileMenu->addAction(exitAction_);
 
@@ -470,7 +476,7 @@ void MainWindow::createMenus() {
                                     "<tr><td><b>Ctrl++ / Ctrl+-</b></td><td>zoom the board</td></tr>"
                                     "<tr><td><b>Ctrl+0</b></td><td>fit the board in the window</td></tr>"
                                     "<tr><td><b>M</b></td><td>measure between two points</td></tr>"
-                                    "<tr><td><b>3</b></td><td>3D preview (Esc returns)</td></tr>"
+                                    "<tr><td><b>3</b></td><td>3D preview: drag rotates, wheel zooms, double click resets (Esc returns)</td></tr>"
                                     "<tr><td><b>Z</b></td><td>zoom to the selected part</td></tr>"
                                     "<tr><td><b>Ctrl+P</b></td><td>print the board at 1:1</td></tr>"
                                     "<tr><td><b>Click a track or pad</b></td><td>highlight that net</td></tr>"
@@ -937,6 +943,29 @@ void MainWindow::exportSvg() {
     file.write(QByteArray::fromStdString(pcbv::toSvg(document_, options)));
     file.close();
     log(tr("Exported board SVG: %1").arg(path));
+    statusBar()->showMessage(tr("Exported %1").arg(path), 6000);
+}
+
+void MainWindow::export3DImage() {
+    if (!hasDocument_) {
+        ensureDocumentLoaded();
+        return;
+    }
+    if (boardView_ == nullptr || !boardView_->hasGeometry()) {
+        QMessageBox::information(this, tr("Nothing to draw"),
+                                 tr("This document has no PCB geometry to render."));
+        return;
+    }
+    const QString suggested = exportDirectory() + "/" +
+                              QFileInfo(qs(document_.fileName)).completeBaseName() + "-3d.png";
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export 3D view"), suggested, tr("PNG image (*.png);;All files (*)"));
+    if (path.isEmpty()) return;
+    if (!boardView_->saveThreeD(path, 1920, 1200)) {
+        QMessageBox::warning(this, tr("Export failed"), tr("Cannot write:\n%1").arg(path));
+        return;
+    }
+    log(tr("Exported 3D view: %1").arg(path));
     statusBar()->showMessage(tr("Exported %1").arg(path), 6000);
 }
 
@@ -2181,8 +2210,9 @@ void MainWindow::updateActionStates() {
         if (action != nullptr) action->setEnabled(hasDocument);
     }
     // Board level commands only make sense for documents with drawable geometry.
-    for (QAction* action : {svgAction_, netlistCsvAction_, printAction_, fitAction_,
-                            zoomInAction_, zoomOutAction_, measureAction_, zoomPartAction_}) {
+    for (QAction* action : {svgAction_, threeDImageAction_, netlistCsvAction_, printAction_,
+                            fitAction_, zoomInAction_, zoomOutAction_, measureAction_,
+                            zoomPartAction_}) {
         if (action != nullptr) action->setEnabled(hasBoard);
     }
     if (layersDock_ != nullptr) layersDock_->setEnabled(hasBoard);

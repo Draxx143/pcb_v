@@ -9,6 +9,7 @@
 #include "core/BoardRender.h"
 #include "core/Export.h"
 #include "core/Model.h"
+#include "core/ThreeD.h"
 
 class QKeyEvent;
 class QPainter;
@@ -40,10 +41,13 @@ public:
     /// Frames one component (index into document.components).
     void zoomToComponent(int index);
 
-    /// Simple 3D preview: the board extruded to 1.6 mm and tilted. Drag rotates,
-    /// the wheel zooms, a double click resets the camera.
+    /// 3D preview: a software rendered board (solder mask, copper, pads, extruded
+    /// bodies). Drag rotates, the wheel zooms, a double click resets the camera.
     void setThreeD(bool on);
     bool threeD() const { return threeD_; }
+
+    /// Renders the current 3D camera into an image file (PNG/JPG by extension).
+    bool saveThreeD(const QString& path, int width, int height);
 
     /// Draws the board for the printer: `devicePerMm` device units per millimetre,
     /// top-left corner at `origin`. Returns the size of the drawing in device units.
@@ -133,9 +137,13 @@ private:
     QString measureSnapLabel_;
 
     bool threeD_ = false;
-    double yawDeg_ = -35.0;        ///< rotation around the board normal
+    double yawDeg_ = 35.0;         ///< rotation around the board normal
     double elevationDeg_ = 52.0;   ///< 90 = straight down on the board
     double threeDZoom_ = 1.0;
     QPointF rotateStart_;
     bool rotating_ = false;
+    bool threeDDirty_ = true;      ///< the cached frame has to be rendered again
+    bool threeDQuick_ = false;     ///< low quality while the user is dragging
+    pcbv::ThreeDImage threeDImage_;
+    mutable QSize threeDSize_;
 };
