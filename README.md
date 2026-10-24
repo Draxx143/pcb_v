@@ -195,10 +195,9 @@ cd ~/pcb_v && git pull
 ls -lh library
 ```
 
-اگر مخزن را کلون نکرده‌اید، کل پروژه را از GitHub با دکمهٔ **Code → Download ZIP** بگیرید
-(یا مستقیم: `https://codeload.github.com/Draxx143/pcb_v/zip/refs/heads/main`) و پوشهٔ
-`library/` را کنار برنامه بگذارید. ساخت دوبارهٔ فایل zip از روی همین پوشه:
-`python3 tools/pack_library.py`.
+اگر مخزن را کلون نکرده‌اید، در صفحهٔ GitHub روی **Code → Download ZIP** بزنید و پوشهٔ
+`library/` را کنار برنامه بگذارید (همان دو فایل `.pcbvlib` کافی است). ساخت دوبارهٔ فایل zip
+از روی همین پوشه: `python3 tools/pack_library.py` که خروجی را در `dist/` می‌گذارد.
 
 **استفاده**: هیچ کاری لازم نیست. برنامه هنگام باز کردن هر برد، خودش `library/` را در این
 مسیرها می‌گردد و مدل‌ها را به قطعات وصل می‌کند:
