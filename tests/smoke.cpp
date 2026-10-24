@@ -393,6 +393,33 @@ void selfTest() {
               "an empty pad sub-record does not swallow the next record");
     }
 
+    // --- numeric layer names ------------------------------------------------
+    // Real exports write layers either by name ("TOP") or by number ("1"); a numeric
+    // layer that is not understood ends up grey and effectively invisible.
+    {
+        const std::string path = "/tmp/pcbv-smoke-layers.PcbDoc";
+        const std::string text =
+            "|RECORD=Board|KIND=Protel_Advanced_PCB|VERSION=5.00|KIND0=0|VX0=0mil|VY0=0mil\r\n"
+            "|RECORD=Track|LAYER=1|X1=0mil|Y1=0mil|X2=100mil|Y2=0mil|WIDTH=10mil\r\n"
+            "|RECORD=Track|LAYER=32|X1=0mil|Y1=10mil|X2=100mil|Y2=10mil|WIDTH=10mil\r\n"
+            "|RECORD=Track|LAYER=33|X1=0mil|Y1=20mil|X2=100mil|Y2=20mil|WIDTH=10mil\r\n"
+            "|RECORD=Track|X1=0mil|Y1=30mil|X2=100mil|Y2=30mil|WIDTH=10mil\r\n";
+        if (FILE* f = std::fopen(path.c_str(), "wb")) {
+            std::fwrite(text.data(), 1, text.size(), f);
+            std::fclose(f);
+        }
+        const pcbv::ParseOutcome parsed = pcbv::parseFile(path);
+        check(parsed.ok && parsed.document.geometry.tracks.size() == 4,
+              "numeric layer fixture parses");
+        if (parsed.document.geometry.tracks.size() == 4) {
+            const auto& tracks = parsed.document.geometry.tracks;
+            check(tracks[0].layer == 1 && tracks[1].layer == 32 && tracks[2].layer == 33,
+                  "numeric layer ids are understood");
+            check(tracks[3].layer == 1, "a track without a layer falls back to top copper");
+        }
+        std::remove(path.c_str());
+    }
+
     // --- board outline on the display list -----------------------------------
     // The 3D view draws the board from list.boardOutline and the parts from the
     // primitives, so both have to live in the same device space — otherwise the parts
@@ -484,6 +511,10 @@ void selfTest() {
         }
         const pcbv::ParseOutcome doc = pcbv::parseFile(path);
         check(doc.ok, "search fixture parses");
+        // A part carries its own pads, so a 3D body can be derived from them.
+        check(!doc.document.components.empty() &&
+                  doc.document.components.front().pads.size() == 1,
+              "a PCB part keeps its own pads for the 3D body");
         const pcbv::Library emptyLibrary;
 
         const auto byDesignator = pcbv::searchDocument(doc.document, emptyLibrary, "u7");

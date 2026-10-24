@@ -265,7 +265,8 @@ void BoardView::mouseMoveEvent(QMouseEvent* event) {
             const QPointF delta = event->pos() - rotateStart_;
             rotateStart_ = event->pos();
             yawDeg_ += delta.x() * 0.45;
-            elevationDeg_ = std::clamp(elevationDeg_ - delta.y() * 0.35, 12.0, 88.0);
+            // Below the horizon the board turns over, so the bottom copper is reachable.
+            elevationDeg_ = std::clamp(elevationDeg_ - delta.y() * 0.35, -78.0, 88.0);
             update();
         }
         return;
@@ -1000,6 +1001,17 @@ void BoardView::paintThreeD(QPainter& painter) {
                    toBoardMm(pcbv::Point{0.0, list_.height})};
     }
 
+    // Absolute board mils -> the same space (the display list is shifted by its margin
+    // and mirrors Y), so parts, pads and traces are all placed with one conversion.
+    const double marginMil =
+        list_.unitsPerMil > 0.0
+            ? (list_.width / list_.unitsPerMil - list_.boardWidthMil) / 2.0
+            : 0.0;
+    auto milToBoardMm = [&](double milX, double milY) {
+        return QPointF((milX - document_.bounds.minX + marginMil) * 0.0254,
+                       (milY - document_.bounds.maxY - marginMil) * 0.0254);
+    };
+
     // --- camera --------------------------------------------------------------
     const double yaw = yawDeg_ * kPi3D / 180.0;
     const double elev = elevationDeg_ * kPi3D / 180.0;
@@ -1099,7 +1111,7 @@ void BoardView::paintThreeD(QPainter& painter) {
                 mm.reserve(primitive.points.size());
                 for (const auto& point : primitive.points) mm.push_back(toBoardMm(point));
                 addFace(bucket, mm, z, color, primitive.filled,
-                        std::max(primitive.strokeWidth / unitsPerMm * scale, 0.6), 0.0,
+                        std::max(primitive.strokeWidth / unitsPerMm * scale, 1.2), 0.0,
                         sequence);
                 break;
             }
@@ -1111,7 +1123,9 @@ void BoardView::paintThreeD(QPainter& painter) {
                 item.line = true;
                 item.sequence = sequence;
                 item.color = color;
-                item.width = std::max(primitive.strokeWidth / unitsPerMm * scale, 0.7);
+                // Thin traces (3-6 mil) are barely a pixel wide at board zoom, so give
+                // every stroke a readable minimum width instead of a washed-out hairline.
+                item.width = std::max(primitive.strokeWidth / unitsPerMm * scale, 1.6);
                 item.polygon << toScreen(project(toBoardMm(primitive.points[0]), z, depthA));
                 item.polygon << toScreen(project(toBoardMm(primitive.points[1]), z, depthB));
                 item.depth = (depthA + depthB) / 2.0;
@@ -1148,6 +1162,112 @@ void BoardView::paintThreeD(QPainter& painter) {
                 break;
             }
         }
+    }
+
+    // --- component bodies ----------------------------------------------------
+    // Every part becomes a simple extruded box: pads give the footprint, HEIGHT gives the
+    // body height. The box is translucent so the pads and traces underneath stay readable,
+    // with a light rim so the volume is obvious.
+    std::vector<Item> bodyItems;
+    for (const pcbv::Component& component : document_.components) {
+        // Footprint extents in the part's own frame (pads are stored in board mils).
+        const double toLocal = -component.rotation * kPi3D / 180.0;
+        const double localCos = std::cos(toLocal), localSin = std::sin(toLocal);
+        double minX = 0.0, maxX = 0.0, minY = 0.0, maxY = 0.0;
+        bool havePads = false;
+        for (const pcbv::Pad& pad : component.pads) {
+            const double dx = pad.x - component.x;
+            const double dy = pad.y - component.y;
+            const double lx = dx * localCos - dy * localSin;
+            const double ly = dx * localSin + dy * localCos;
+            const double halfW = std::max(pad.width, 1.0) / 2.0;
+            const double halfH = std::max(pad.height, 1.0) / 2.0;
+            if (!havePads) {
+                minX = lx - halfW; maxX = lx + halfW;
+                minY = ly - halfH; maxY = ly + halfH;
+                havePads = true;
+            } else {
+                minX = std::min(minX, lx - halfW); maxX = std::max(maxX, lx + halfW);
+                minY = std::min(minY, ly - halfH); maxY = std::max(maxY, ly + halfH);
+            }
+        }
+        if (!havePads) {   // a part without pads: a small default body
+            minX = -20.0; maxX = 20.0;
+            minY = -12.0; maxY = 12.0;
+        }
+        const double margin = 6.0;   // mil of air around the pads
+        minX -= margin; maxX += margin; minY -= margin; maxY += margin;
+
+        const double heightMm = std::clamp(
+            component.height > 0.0 ? component.height * 0.0254 : 1.0, 0.4, 10.0);
+        const bool onBottom = QString::fromStdString(component.layer).contains(
+            QStringLiteral("BOTTOM"), Qt::CaseInsensitive);
+        const double baseZ = onBottom ? -kThicknessMm : kThicknessMm;
+        const double topZ = onBottom ? baseZ - heightMm : baseZ + heightMm;
+
+        const double toBoard = component.rotation * kPi3D / 180.0;
+        const double boardCos = std::cos(toBoard), boardSin = std::sin(toBoard);
+        std::vector<QPointF> corners;
+        for (const QPointF& local : {QPointF(minX, minY), QPointF(maxX, minY),
+                                     QPointF(maxX, maxY), QPointF(minX, maxY)}) {
+            corners.push_back(milToBoardMm(component.x + local.x() * boardCos - local.y() * boardSin,
+                                           component.y + local.x() * boardSin + local.y() * boardCos));
+        }
+
+        const QColor bodyTop(onBottom ? 0x74 : 0xa7, onBottom ? 0x82 : 0xb7,
+                             onBottom ? 0x92 : 0xc9, 90);
+        const QColor rim(onBottom ? 0x7c : 0xb6, onBottom ? 0x8d : 0xc8,
+                         onBottom ? 0x9e : 0xd6, 200);
+
+        // Visible top (or bottom) face of the box.
+        {
+            Item face;
+            face.filled = true;
+            face.color = bodyTop;
+            double depthSum = 0.0;
+            for (const QPointF& corner : corners) {
+                double depth = 0.0;
+                face.polygon << toScreen(project(corner, topZ, depth));
+                depthSum += depth;
+            }
+            face.depth = depthSum / std::max<std::size_t>(1, corners.size()) - 4.0;
+            bodyItems.push_back(face);
+        }
+        // Side walls, shaded by how much they face the viewer.
+        for (std::size_t i = 0; i < corners.size(); ++i) {
+            const QPointF& a = corners[i];
+            const QPointF& b = corners[(i + 1) % corners.size()];
+            const double edgeAngle = std::atan2(b.y() - a.y(), b.x() - a.x()) + kPi3D / 2.0;
+            const double facing = std::fabs(std::cos(edgeAngle - yaw));
+            const int shade = static_cast<int>(84.0 + 52.0 * facing);
+            double depthA = 0.0, depthB = 0.0;
+            Item wall;
+            wall.filled = true;
+            wall.color = QColor(shade, shade + 12, shade + 26, 210);
+            wall.polygon << toScreen(project(a, baseZ, depthA))
+                         << toScreen(project(b, baseZ, depthB))
+                         << toScreen(project(b, topZ, depthB))
+                         << toScreen(project(a, topZ, depthA));
+            wall.depth = (depthA + depthB) / 2.0;
+            bodyItems.push_back(wall);
+        }
+        // Bright rim: the top rectangle and the four vertical edges.
+        auto addRim = [&](const QPointF& from, double fromZ, const QPointF& to, double toZ) {
+            double depthA = 0.0, depthB = 0.0;
+            Item edge;
+            edge.filled = false;
+            edge.line = true;
+            edge.color = rim;
+            edge.width = 1.1;
+            edge.polygon << toScreen(project(from, fromZ, depthA))
+                         << toScreen(project(to, toZ, depthB));
+            edge.depth = (depthA + depthB) / 2.0 - 6.0;
+            bodyItems.push_back(edge);
+        };
+        for (std::size_t i = 0; i < corners.size(); ++i) {
+            addRim(corners[i], topZ, corners[(i + 1) % corners.size()], topZ);
+        }
+        for (const QPointF& corner : corners) addRim(corner, baseZ, corner, topZ);
     }
 
     auto drawBucket = [&painter](std::vector<Item>& bucket, bool byDepth = false) {
@@ -1195,11 +1315,21 @@ void BoardView::paintThreeD(QPainter& painter) {
 
     painter.save();
     painter.setRenderHint(QPainter::Antialiasing, true);
-    drawBucket(faceBottom);
-    drawBucket(bottomItems);
-    drawBucket(wallItems, true);
-    drawBucket(faceTop);
-    drawBucket(topItems);
+    if (elevationDeg_ >= 0.0) {
+        drawBucket(faceBottom);
+        drawBucket(bottomItems);
+        drawBucket(wallItems, true);
+        drawBucket(faceTop);
+        drawBucket(topItems);
+    } else {
+        // Seen from underneath: the bottom face is the near one.
+        drawBucket(faceTop);
+        drawBucket(topItems);
+        drawBucket(wallItems, true);
+        drawBucket(faceBottom);
+        drawBucket(bottomItems);
+    }
+    drawBucket(bodyItems, true);
 
     // Hint line.
     QFont font = painter.font();

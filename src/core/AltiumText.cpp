@@ -296,6 +296,19 @@ std::string pcbLayerName(int layer) {
 int pcbLayerIdFromName(const std::string& input) {
     const std::string name = upper(trim(input));
     if (name.empty()) return 0;
+    // Some exports write the layer as a plain number ("LAYER=1"); without this every such
+    // primitive would end up on layer 0 and be drawn in the neutral "unknown" colour.
+    bool numeric = !name.empty();
+    for (const char c : name) {
+        if (c < '0' || c > '9') {
+            numeric = false;
+            break;
+        }
+    }
+    if (numeric) {
+        const int layer = parseInt(name, -1);
+        if (layer >= 0 && layer <= 74) return layer;
+    }
     if (name == "TOP" || name == "TOP LAYER" || name == "TOPLAYER" || name == "TOPCOPPER") return 1;
     if (name == "BOTTOM" || name == "BOTTOM LAYER" || name == "BOTTOMLAYER" ||
         name == "BOTTOMCOPPER")

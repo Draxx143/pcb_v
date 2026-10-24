@@ -228,7 +228,9 @@ void parseAsciiPcb(const std::vector<std::uint8_t>& bytes, Document& document) {
             track.x2 = parseMil(valueOf(props, "X2"));
             track.y2 = parseMil(valueOf(props, "Y2"));
             track.width = parseMil(valueOf(props, "WIDTH"));
-            track.layer = layer;
+            // A track without a usable layer is copper on the top layer; drawn as
+            // "unknown layer" it would be grey on black, i.e. invisible.
+            track.layer = layer > 0 ? layer : 1;
             const auto netIt = netNames.find(parseInt(valueOf(props, "NET"), -1));
             if (netIt != netNames.end()) track.net = netIt->second;
             document.bounds.add(track.x1, track.y1);
