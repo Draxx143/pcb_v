@@ -14,11 +14,13 @@
 #include "Library.h"
 
 #include <algorithm>
+#include <filesystem>
 #include <cmath>
 #include <cstring>
 #include <iomanip>
 #include <map>
 #include <cctype>
+#include <cstdlib>
 #include <sstream>
 
 #include "AltiumInternal.h"
@@ -1136,6 +1138,19 @@ std::string libraryToText(const Library& library) {
             out << "\n3D models  " << withModel << " of " << library.footprints.size()
                 << " footprint(s) carry a STEP body (Models storage)\n";
         }
+        std::size_t withDatasheet = 0;
+        for (const LibraryFootprint& footprint : library.footprints) {
+            if (!partProperty(footprint.parameters, "DATASHEET").empty()) ++withDatasheet;
+        }
+        if (withDatasheet > 0) {
+            out << "\nDatasheets\n";
+            for (const LibraryFootprint& footprint : library.footprints) {
+                const std::string url = partProperty(footprint.parameters, "DATASHEET");
+                if (url.empty()) continue;
+                out << "  " << std::left << std::setw(24) << ellipsize(footprint.name, 23)
+                    << url << "\n";
+            }
+        }
     } else {
         out << "\n" << std::left;
         out << std::setw(34) << "Symbol" << std::right << std::setw(6) << "Pins"
@@ -1571,6 +1586,136 @@ std::string fingerprint(const std::string& text) {
 
 } // namespace
 
+namespace {
+
+/// Extent of a pad group in mil (0 x 0 when it has none).
+void padExtent(const std::vector<Pad>& pads, double& width, double& height) {
+    double minX = 1e18, maxX = -1e18, minY = 1e18, maxY = -1e18;
+    for (const Pad& pad : pads) {
+        minX = std::min(minX, pad.x - pad.width / 2.0);
+        maxX = std::max(maxX, pad.x + pad.width / 2.0);
+        minY = std::min(minY, pad.y - pad.height / 2.0);
+        maxY = std::max(maxY, pad.y + pad.height / 2.0);
+    }
+    width = maxX > minX ? maxX - minX : 0.0;
+    height = maxY > minY ? maxY - minY : 0.0;
+}
+
+/// How many different pad numbers a pad group has ("1","2","3"), not how many rectangles:
+/// a library footprint often splits one pad into a copper and a paste object.
+std::size_t uniquePadNumbers(const std::vector<Pad>& pads) {
+    std::vector<std::string> names;
+    for (const Pad& pad : pads) {
+        if (pad.designator.empty()) continue;
+        if (std::find(names.begin(), names.end(), pad.designator) == names.end()) {
+            names.push_back(pad.designator);
+        }
+    }
+    return names.size();
+}
+
+/// Extent of the pad *centres*: where the part's pins sit. This is what a land pattern is
+/// built from, and unlike the copper outline it does not move when a designer picks bigger
+/// or smaller pads for the same footprint.
+void padCentreExtent(const std::vector<Pad>& pads, double& width, double& height) {
+    double minX = 1e18, maxX = -1e18, minY = 1e18, maxY = -1e18;
+    for (const Pad& pad : pads) {
+        minX = std::min(minX, pad.x);
+        maxX = std::max(maxX, pad.x);
+        minY = std::min(minY, pad.y);
+        maxY = std::max(maxY, pad.y);
+    }
+    width = maxX > minX ? maxX - minX : 0.0;
+    height = maxY > minY ? maxY - minY : 0.0;
+}
+
+/// Number of pads that actually have a hole (a through-hole part never matches an SMD one).
+std::size_t drilledPadCount(const std::vector<Pad>& pads) {
+    std::size_t drilled = 0;
+    for (const Pad& pad : pads) {
+        if (pad.holeSize > 0.0) ++drilled;
+    }
+    return drilled;
+}
+
+/// Largest hole of a pad group: a resistor's 0.8 mm lead and a diode's 1.1 mm lead are a
+/// good way to tell two otherwise similar axial footprints apart.
+double largestHole(const std::vector<Pad>& pads) {
+    double hole = 0.0;
+    for (const Pad& pad : pads) hole = std::max(hole, pad.holeSize);
+    return hole;
+}
+
+/// Last resort when the names do not match at all: the footprint whose pads sit in the same
+/// places as the pads of the placed part. Pad centres must agree within 15 %, the drilled /
+/// SMD nature must be identical, and the copper outline and the hole size must be close;
+/// the copper outline is allowed to differ by more than the centres, because two libraries
+/// often use different pad sizes for the same footprint. The best candidate must also be
+/// clearly better than every other one, so a model is never attached by guesswork.
+const LibraryFootprint* matchByGeometry(const Component& component, const Library& library) {
+    if (component.pads.empty()) return nullptr;
+    const std::size_t wantedPads = uniquePadNumbers(component.pads);
+    if (wantedPads == 0) return nullptr;
+    const std::size_t wantedDrilled = drilledPadCount(component.pads);
+
+    double width = 0.0, height = 0.0;
+    padCentreExtent(component.pads, width, height);
+    // A single pad has no spread at all; such a footprint cannot be told apart from another.
+    if (wantedPads > 1 && width <= 0.0 && height <= 0.0) return nullptr;
+    double copperWidth = 0.0, copperHeight = 0.0;
+    padExtent(component.pads, copperWidth, copperHeight);
+    const double hole = largestHole(component.pads);
+
+    auto relative = [](double a, double b) {
+        const double scale = std::max(a, b);
+        return scale > 0.0 ? std::fabs(a - b) / scale : 0.0;
+    };
+
+    const LibraryFootprint* best = nullptr;
+    double bestScore = 1e18;
+    double secondScore = 1e18;
+    for (const LibraryFootprint& footprint : library.footprints) {
+        if (footprint.models.empty()) continue;
+        if (uniquePadNumbers(footprint.geometry.pads) != wantedPads) continue;
+        if (drilledPadCount(footprint.geometry.pads) != wantedDrilled) continue;
+
+        double fpWidth = 0.0, fpHeight = 0.0;
+        padCentreExtent(footprint.geometry.pads, fpWidth, fpHeight);
+        // Compare only the axes that actually spread; one straight row of pads has height 0.
+        auto near = [](double a, double b, double tolerance) {
+            if (a <= 0.0 && b <= 0.0) return true;
+            if (a <= 0.0 || b <= 0.0) return false;   // one has a spread, the other does not
+            return std::fabs(a - b) / std::max(a, b) <= tolerance;
+        };
+        if (!near(fpWidth, width, 0.15) || !near(fpHeight, height, 0.15)) continue;
+
+        double fpCopperWidth = 0.0, fpCopperHeight = 0.0;
+        padExtent(footprint.geometry.pads, fpCopperWidth, fpCopperHeight);
+        if (!near(fpCopperWidth, copperWidth, 0.40) || !near(fpCopperHeight, copperHeight, 0.40))
+            continue;
+
+        const double holeError = relative(largestHole(footprint.geometry.pads), hole);
+        if (!near(largestHole(footprint.geometry.pads), hole, 0.25)) continue;
+        const double score = std::max({relative(fpWidth, width), relative(fpHeight, height),
+                                       0.6 * relative(fpCopperWidth, copperWidth),
+                                       0.6 * relative(fpCopperHeight, copperHeight),
+                                       0.6 * holeError});
+        if (score < bestScore) {
+            secondScore = bestScore;
+            bestScore = score;
+            best = &footprint;
+        } else if (score < secondScore) {
+            secondScore = score;
+        }
+    }
+    // Two footprints that fit about equally well mean the answer is not clear: attach
+    // nothing. The winner also has to be a genuinely good fit on its own.
+    if (best == nullptr || bestScore > 0.15 || secondScore - bestScore < 0.02) return nullptr;
+    return best;
+}
+
+} // namespace
+
 std::size_t attachModels(Document& document, const Library& library) {
     if (library.footprints.empty()) return 0;
     std::size_t attached = 0;
@@ -1604,7 +1749,18 @@ std::size_t attachModels(Document& document, const Library& library) {
             }
             if (candidates == 1) match = candidateMatch;
         }
-        if (match == nullptr || match->models.empty()) continue;
+        if (match == nullptr) match = matchByGeometry(component, library);
+        if (match == nullptr) continue;
+        component.libraryPattern = match->name;
+        // The library knows what the part is (datasheet, maker, order number) even when the
+        // board file does not say; fill only what the board left empty.
+        if (component.datasheet.empty())
+            component.datasheet = partProperty(match->parameters, "DATASHEET");
+        if (component.manufacturer.empty())
+            component.manufacturer = partProperty(match->parameters, "MANUFACTURER");
+        if (component.partNumber.empty())
+            component.partNumber = partProperty(match->parameters, "MPN");
+        if (match->models.empty()) continue;
 
         // Copy the models once and point the component at them.
         for (const EmbeddedModel& model : match->models) {
@@ -1625,6 +1781,73 @@ std::size_t attachModelsFromFile(Document& document, const std::string& libraryP
         return 0;
     }
     return attachModels(document, outcome.library);
+}
+
+std::string partProperty(const std::vector<Property>& parameters, const std::string& name) {
+    for (const Property& property : parameters) {
+        if (property.name == name) return property.value;
+    }
+    return {};
+}
+
+namespace {
+
+bool isBundlePath(const std::string& path) {
+    return path.size() > 8 && fingerprint(path.substr(path.size() - 8)) == "pcbvlib";
+}
+
+void addBundlesIn(const std::filesystem::path& folder, std::vector<std::string>& out) {
+    std::error_code error;
+    if (!std::filesystem::is_directory(folder, error)) return;
+    for (const auto& entry : std::filesystem::directory_iterator(
+             folder, std::filesystem::directory_options::skip_permission_denied, error)) {
+        if (error) break;
+        if (!entry.is_regular_file(error)) continue;
+        const std::string path = entry.path().string();
+        if (!isBundlePath(path)) continue;
+        if (std::find(out.begin(), out.end(), path) == out.end()) out.push_back(path);
+    }
+}
+
+} // namespace
+
+std::vector<std::string> findLibraryBundles(const std::string& boardPath) {
+    std::vector<std::string> files;
+    const std::filesystem::path board(boardPath);
+    const std::filesystem::path folder = board.has_parent_path() ? board.parent_path()
+                                                                 : std::filesystem::current_path();
+    addBundlesIn(folder, files);
+    addBundlesIn(folder / "library", files);
+
+    if (const char* configured = std::getenv("PCBV_LIBRARY")) {
+        if (*configured != '\0') addBundlesIn(configured, files);
+    }
+    std::error_code error;
+    addBundlesIn(std::filesystem::current_path(error) / "library", files);
+    if (const char* home = std::getenv("HOME")) {
+        addBundlesIn(std::filesystem::path(home) / ".local/share/pcbv/library", files);
+    }
+    return files;
+}
+
+LibraryAttachment attachLibraryFolder(Document& document, const std::string& boardPath) {
+    LibraryAttachment result;
+    for (const std::string& path : findLibraryBundles(boardPath)) {
+        const ParseOutcome outcome = parseFile(path);
+        if (!outcome.ok) {
+            document.warnings.push_back("Library '" + path + "' could not be read: " +
+                                        outcome.error);
+            continue;
+        }
+        if (outcome.library.footprints.empty()) continue;   // a symbol library: nothing 3D
+        const std::size_t matched = attachModels(document, outcome.library);
+        if (matched > 0) {
+            ++result.libraries;
+            result.parts += matched;
+            result.files.push_back(path);
+        }
+    }
+    return result;
 }
 
 std::string librarySummary(const Library& library) {

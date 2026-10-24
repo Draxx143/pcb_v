@@ -584,8 +584,10 @@ void rotatePoint(double& x, double& y, double& z, const EmbeddedModel& model) {
     }
 }
 
-/// Rotates, centres and rests a STEP mesh: the result sits on Z = 0 with its bounding box
-/// centred on the origin, ready to be dropped on a component.
+/// Places a STEP mesh in the component frame. A model that carries its own placement
+/// (a bundle records the offset/rotation the footprint was authored with) is used exactly
+/// as authored; an Altium library model has no placement of its own, so it is centred on
+/// the footprint origin and rested on the board — which is what Altium shows for those.
 PlacedModel placeModel(const StepMesh& mesh, const EmbeddedModel& model) {
     PlacedModel placed;
     if (!mesh.valid()) return placed;
@@ -596,6 +598,9 @@ PlacedModel placeModel(const StepMesh& mesh, const EmbeddedModel& model) {
     for (StepTriangle& triangle : rotated) {
         for (double* point : {triangle.a, triangle.b, triangle.c}) {
             rotatePoint(point[0], point[1], point[2], model);
+            point[0] += model.dx;
+            point[1] += model.dy;
+            point[2] += model.dz;
             minX = std::min(minX, point[0]);
             maxX = std::max(maxX, point[0]);
             minY = std::min(minY, point[1]);
@@ -604,20 +609,21 @@ PlacedModel placeModel(const StepMesh& mesh, const EmbeddedModel& model) {
             maxZ = std::max(maxZ, point[2]);
         }
     }
-    const double cx = (minX + maxX) / 2.0;
-    const double cy = (minY + maxY) / 2.0;
+    const double cx = model.hasPlacement ? 0.0 : (minX + maxX) / 2.0;
+    const double cy = model.hasPlacement ? 0.0 : (minY + maxY) / 2.0;
+    const double cz = model.hasPlacement ? 0.0 : minZ;
     for (StepTriangle& triangle : rotated) {
         for (double* point : {triangle.a, triangle.b, triangle.c}) {
             point[0] -= cx;
             point[1] -= cy;
-            point[2] -= minZ;
+            point[2] -= cz;
         }
     }
-    placed.minX = -(maxX - minX) / 2.0;
-    placed.maxX = (maxX - minX) / 2.0;
-    placed.minY = -(maxY - minY) / 2.0;
-    placed.maxY = (maxY - minY) / 2.0;
-    placed.height = std::max(maxZ - minZ, 0.01);
+    placed.minX = minX - cx;
+    placed.maxX = maxX - cx;
+    placed.minY = minY - cy;
+    placed.maxY = maxY - cy;
+    placed.height = std::max(maxZ - cz, 0.01);
     placed.hasColor = mesh.hasColor;
     placed.colorR = mesh.colorR;
     placed.colorG = mesh.colorG;
@@ -645,6 +651,9 @@ const PlacedModel* modelFor(const Document& document, int index) {
     mix(&model.rotationX, sizeof(model.rotationX));
     mix(&model.rotationY, sizeof(model.rotationY));
     mix(&model.rotationZ, sizeof(model.rotationZ));
+    mix(&model.dx, sizeof(model.dx));
+    mix(&model.dy, sizeof(model.dy));
+    mix(&model.dz, sizeof(model.dz));
 
     static std::vector<std::pair<std::uint64_t, PlacedModel>> cache;
     for (const auto& entry : cache) {
@@ -923,7 +932,7 @@ ThreeDImage render3D(const Document& document, const BoardRenderOptions& options
             auto toWorld = [&](const double* point) {
                 return Vec3{centre.first + point[0] * c - point[1] * s,
                             centre.second + point[0] * s + point[1] * c,
-                            baseZ + sign * (point[2] + document.models[component.modelIndex].dz)};
+                            baseZ + sign * point[2]};   // dz is already baked in by placeModel
             };
             std::uint32_t colour = palette.body;
             double metal = 0.10;

@@ -282,7 +282,18 @@ int main(int argc, char** argv) {
             std::cerr << "       first bytes: " << result.signature << "\n";
         return 1;
     }
-    const pcbv::Document& doc = result.document;
+    pcbv::Document working = result.document;
+
+    // A board carries no 3D model of its own: they live in the libraries. Any bundle found
+    // next to the board (or in ./library) is matched to the parts automatically.
+    if (result.document.type == pcbv::DocType::PcbDoc) {
+        const pcbv::LibraryAttachment attachment = pcbv::attachLibraryFolder(working, inputPath);
+        if (attachment.parts > 0) {
+            std::cout << "library: " << attachment.parts << " part(s) matched in "
+                      << attachment.files.size() << " file(s)\n";
+        }
+    }
+    const pcbv::Document& doc = working;
 
     if (mode == "--summary") {
         std::cout << pcbv::toSummaryText(doc);

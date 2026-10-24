@@ -150,6 +150,11 @@ struct EmbeddedModel {
     double rotationY = 0.0;
     double rotationZ = 0.0;
     double dz = 0.0;        ///< mm, model offset along the board normal
+    double dx = 0.0;        ///< mm, in-plane offset (KiCad style model placement)
+    double dy = 0.0;
+    /// True when the model record carries an explicit placement (offset + rotation).
+    /// Altium's own models do not: theirs are centred on the footprint origin by the viewer.
+    bool hasPlacement = false;
 };
 
 /// A component / part, from either the schematic or the PCB.
@@ -177,6 +182,7 @@ struct Component {
     int throughHolePads = 0;
     int partCount = 1;           // sub-parts for multi-part symbols
     int modelIndex = -1;         // index into Document::models (-1 = no 3D model)
+    std::string libraryPattern;  // library item this part was matched to ("" = none)
     int componentIndex = -1;     // index inside Components6 (PCB)
     std::vector<Pin> pins;
     std::vector<Pad> pads;

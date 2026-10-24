@@ -15,6 +15,7 @@
 #include "core/BoardRender.h"
 #include "core/BoardIndex.h"
 #include "core/Bom.h"
+#include "core/Bundle.h"
 #include "core/Compare.h"
 #include "core/Netlist.h"
 #include "core/Recent.h"
@@ -755,6 +756,128 @@ void selfTest() {
         check(withoutModel.valid() && withoutModel.pixels != withModel.pixels,
               "a part without a model falls back to a generated body");
         std::remove(path.c_str());
+    }
+
+    // --- component library bundles + automatic matching ----------------------
+    // A bundle has to survive a write/read round trip with its pads, model bytes and part
+    // data intact, and a board has to pick up the library that sits beside it without the
+    // user naming it - but only for parts whose footprint really matches.
+    {
+        pcbv::Library source;
+        source.type = pcbv::DocType::PcbLib;
+        source.container = pcbv::Container::AsciiText;
+        source.fileName = "smoke.pcbvlib";
+
+        pcbv::LibraryFootprint dpak;
+        dpak.name = "DPAK";
+        dpak.description = "DPAK 3 pad";
+        dpak.parameters = {{"DATASHEET", "https://example.invalid/dpak.pdf"},
+                           {"MANUFACTURER", "Example"},
+                           {"MPN", "EX-1"}};
+        for (int i = 0; i < 3; ++i) {
+            pcbv::Pad pad;
+            pad.designator = std::to_string(i + 1);
+            pad.x = 0.0;
+            pad.y = i == 0 ? -90.0 : (i == 1 ? -45.0 : 90.0);
+            pad.width = 110.0;
+            pad.height = 90.0;
+            pad.layer = 1;
+            dpak.geometry.pads.push_back(pad);
+        }
+        pcbv::EmbeddedModel dpakModel;
+        dpakModel.name = "DPAK.step";
+        dpakModel.stepText = boxStep(4.0, 3.0, 1.2);
+        dpak.models.push_back(dpakModel);
+        source.footprints.push_back(dpak);
+
+        pcbv::LibraryFootprint chip;
+        chip.name = "C-0805";
+        chip.parameters = {{"DATASHEET", "https://example.invalid/c0805.pdf"}};
+        for (int i = 0; i < 2; ++i) {
+            pcbv::Pad pad;
+            pad.designator = std::to_string(i + 1);
+            pad.x = i == 0 ? -35.0 : 35.0;
+            pad.width = 50.0;
+            pad.height = 60.0;
+            pad.layer = 1;
+            chip.geometry.pads.push_back(pad);
+        }
+        pcbv::EmbeddedModel chipModel;
+        chipModel.name = "C-0805.step";
+        chipModel.stepText = boxStep(2.0, 1.25, 0.9);
+        chip.models.push_back(chipModel);
+        source.footprints.push_back(chip);
+
+        const std::string bundle = pcbv::writeBundle(source);
+        pcbv::Library restored;
+        std::string bundleError;
+        check(pcbv::readBundle(bundle, restored, bundleError), "a written bundle reads back");
+        check(restored.footprints.size() == 2, "the bundle keeps both footprints");
+        if (restored.footprints.size() == 2) {
+            check(restored.footprints[0].name == "DPAK" && restored.footprints[1].name == "C-0805",
+                  "the bundle keeps the footprint names in order");
+            check(restored.footprints[0].geometry.pads.size() == 3 &&
+                      restored.footprints[1].geometry.pads.size() == 2,
+                  "the bundle keeps every pad with the right owner");
+            check(restored.footprints[0].models.size() == 1 &&
+                      restored.footprints[0].models.front().stepText == dpakModel.stepText,
+                  "the bundle keeps the STEP body byte exact");
+            check(pcbv::partProperty(restored.footprints[0].parameters, "MANUFACTURER") == "Example",
+                  "the bundle keeps the part data (manufacturer)");
+            check(pcbv::partProperty(restored.footprints[1].parameters, "DATASHEET") ==
+                      "https://example.invalid/c0805.pdf",
+                  "the bundle keeps the datasheet link");
+        }
+
+        // The shipped library file, when present, must be readable too.
+        if (FILE* probe = std::fopen("library/pcbv-starter.pcbvlib", "rb")) {
+            std::fclose(probe);
+            const pcbv::ParseOutcome shipped = pcbv::parseFile("library/pcbv-starter.pcbvlib");
+            check(shipped.ok, "the shipped library bundle parses");
+            check(shipped.library.footprints.size() == 12, "the shipped library has 12 footprints");
+            int withModel = 0;
+            for (const auto& footprint : shipped.library.footprints) {
+                if (!footprint.models.empty()) ++withModel;
+            }
+            check(withModel == 12, "every shipped footprint carries a real STEP body");
+        }
+
+        // A board that names its footprint differently from the library still gets the
+        // model, because the pads match; a part that matches nothing gets none.
+        const std::string boardPath = "/tmp/pcbv-smoke-library.PcbDoc";
+        std::string text =
+            "|RECORD=Board|KIND=Protel_Advanced_PCB|VERSION=5.00|VX0=0mil|VY0=0mil|"
+            "KIND1=0|VX1=2000mil|VY1=0mil|KIND2=0|VX2=2000mil|VY2=1500mil|"
+            "KIND3=0|VX3=0mil|VY3=1500mil\r\n"
+            "|RECORD=Component|ID=0|LAYER=TOP|X=800mil|Y=700mil|PATTERN=REGULATOR-3|"
+            "COMMENT=LM317|SOURCEDESIGNATOR=U1\r\n"
+            "|RECORD=Pad|COMPONENT=0|LAYER=TOP|NAME=1|X=800mil|Y=610mil|XSIZE=110mil|YSIZE=90mil\r\n"
+            "|RECORD=Pad|COMPONENT=0|LAYER=TOP|NAME=2|X=800mil|Y=655mil|XSIZE=110mil|YSIZE=90mil\r\n"
+            "|RECORD=Pad|COMPONENT=0|LAYER=TOP|NAME=3|X=800mil|Y=790mil|XSIZE=110mil|YSIZE=90mil\r\n"
+            "|RECORD=Component|ID=1|LAYER=TOP|X=1400mil|Y=700mil|PATTERN=MYSTERY-17|"
+            "COMMENT=???|SOURCEDESIGNATOR=X9\r\n"
+            "|RECORD=Pad|COMPONENT=1|LAYER=TOP|NAME=1|X=1300mil|Y=700mil|XSIZE=20mil|YSIZE=20mil\r\n"
+            "|RECORD=Pad|COMPONENT=1|LAYER=TOP|NAME=2|X=1500mil|Y=700mil|XSIZE=20mil|YSIZE=20mil\r\n";
+        if (FILE* f = std::fopen(boardPath.c_str(), "wb")) {
+            std::fwrite(text.data(), 1, text.size(), f);
+            std::fclose(f);
+        }
+        pcbv::ParseOutcome board = pcbv::parseFile(boardPath);
+        check(board.ok && board.document.components.size() == 2, "the library fixture board parses");
+        if (board.document.components.size() == 2) {
+            const std::size_t matched = pcbv::attachModels(board.document, restored);
+            check(matched == 1, "only the part whose pads match a library item gets a model");
+            check(board.document.components[0].modelIndex >= 0 &&
+                      board.document.components[0].libraryPattern == "DPAK",
+                  "a differently named footprint is matched by its pads");
+            check(board.document.components[0].manufacturer == "Example" &&
+                      !board.document.components[0].datasheet.empty(),
+                  "the matched library part supplies the missing part data");
+            check(board.document.components[1].modelIndex < 0 &&
+                      board.document.components[1].libraryPattern.empty(),
+                  "a part that matches nothing is left without a model");
+        }
+        std::remove(boardPath.c_str());
     }
 
     // --- global search across documents --------------------------------------

@@ -134,6 +134,24 @@ std::size_t attachModels(Document& document, const Library& library);
 std::size_t attachModelsFromFile(Document& document, const std::string& libraryPath,
                                  std::string* error = nullptr);
 
+/// What `attachLibraryFolder` did (so the UI can report it honestly).
+struct LibraryAttachment {
+    std::size_t libraries = 0;             ///< bundles that were read
+    std::size_t parts = 0;                 ///< components that got a model or a datasheet
+    std::vector<std::string> files;        ///< the bundles that were used
+};
+
+/// Finds the library bundles that belong to a board: next to it, in a "library" folder
+/// beside it, in $PCBV_LIBRARY, in ./library and in ~/.local/share/pcbv/library. Every
+/// part is then matched to a footprint and gets its real model and datasheet.
+LibraryAttachment attachLibraryFolder(Document& document, const std::string& boardPath);
+
+/// The bundle files `attachLibraryFolder` would use (exposed for the CLI and the tests).
+std::vector<std::string> findLibraryBundles(const std::string& boardPath);
+
+/// Value of a part parameter (MANUFACTURER, MPN, DATASHEET, …), empty when absent.
+std::string partProperty(const std::vector<Property>& parameters, const std::string& name);
+
 /// One-line summary, e.g. "PcbLib · 12 footprints · 0 symbols".
 std::string librarySummary(const Library& library);
 

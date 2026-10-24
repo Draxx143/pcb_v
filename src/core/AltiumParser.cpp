@@ -13,6 +13,7 @@
 #include "BoardIndex.h"
 #include "AltiumText.h"
 #include "Library.h"
+#include "Bundle.h"
 #include "CompoundFile.h"
 
 namespace pcbv {
@@ -801,6 +802,8 @@ DocType detectType(const std::string& path) {
     if (text::endsWithNoCase(path, ".schdoc")) return DocType::SchDoc;
     if (text::endsWithNoCase(path, ".pcblib")) return DocType::PcbLib;
     if (text::endsWithNoCase(path, ".schlib")) return DocType::SchLib;
+    // A PCB Viewer bundle carries both kinds; the file itself says which one it is.
+    if (text::endsWithNoCase(path, ".pcbvlib")) return DocType::PcbLib;
     return DocType::Unknown;
 }
 
@@ -844,6 +847,20 @@ ParseOutcome parseFile(const std::string& path) {
         doc.fileSize = static_cast<std::uint64_t>(size);
         doc.signature = outcome.signature;
 
+        if (looksLikeBundle(head)) {
+            outcome.detected = "PCB Viewer library bundle (plain text)";
+            const std::string text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+            std::string bundleError;
+            if (!readBundle(text, outcome.library, bundleError)) {
+                outcome.error = bundleError;
+                return outcome;
+            }
+            outcome.library.fileName = doc.fileName;
+            doc.type = outcome.library.type;
+            buildLibraryDocument(doc, outcome.library);
+            outcome.ok = true;
+            return outcome;
+        }
         if (isZip) {
             outcome.detected = "ZIP archive";
             outcome.error =

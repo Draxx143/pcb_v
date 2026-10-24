@@ -24,3 +24,6 @@ samples/*.pcbdoc
 samples/*.schdoc
 samples/*.PcbLib
 samples/*.SchLib
+
+# packaged downloads (built by tools/pack_library.py)
+dist/

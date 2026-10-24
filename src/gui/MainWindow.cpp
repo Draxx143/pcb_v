@@ -1254,8 +1254,8 @@ void MainWindow::openFileDialog() {
     const QString startDir = lastDirectory_;
     const QStringList files = QFileDialog::getOpenFileNames(
         this, tr("Open Altium documents"), startDir,
-        tr("Altium documents and libraries (*.PcbDoc *.SchDoc *.PcbLib *.SchLib *.pcbdoc *.schdoc "
-           "*.pcblib *.schlib);;All files (*)"));
+        tr("Altium documents and libraries (*.PcbDoc *.SchDoc *.PcbLib *.SchLib *.pcbvlib "
+           "*.pcbdoc *.schdoc *.pcblib *.schlib);;All files (*)"));
     for (const QString& file : files) openDocument(file);
 }
 
@@ -1282,7 +1282,21 @@ void MainWindow::openDocument(const QString& path) {
     }
 
     QApplication::setOverrideCursor(Qt::WaitCursor);
-    const pcbv::ParseOutcome outcome = pcbv::parseFile(path.toStdString());
+    pcbv::ParseOutcome outcome = pcbv::parseFile(path.toStdString());
+    // A board carries no 3D model of its own. The bundles next to it (and the ones shipped
+    // with the viewer) are matched to its parts, so the preview shows the real bodies.
+    if (outcome.ok && outcome.document.type == pcbv::DocType::PcbDoc) {
+        const pcbv::LibraryAttachment attachment =
+            pcbv::attachLibraryFolder(outcome.document, path.toStdString());
+        if (attachment.parts > 0) {
+            log(tr("library: %1 part(s) matched in %2 file(s)")
+                    .arg(attachment.parts)
+                    .arg(attachment.files.size()));
+            for (const std::string& file : attachment.files) {
+                log(tr("        %1").arg(qs(file)));
+            }
+        }
+    }
     QApplication::restoreOverrideCursor();
 
     if (!outcome.ok) {
@@ -1705,6 +1719,12 @@ QString MainWindow::libraryItemDetailsHtml(int index) const {
                                    .arg(footprint.regionCount)
                                    .arg(footprint.fillCount));
         }
+        const QString datasheet = qs(pcbv::partProperty(footprint.parameters, "DATASHEET"));
+        if (!datasheet.isEmpty()) {
+            row(tr("Datasheet"),
+                QString("<a style='color:#8ab4f8' href=\"%1\">%1</a>")
+                    .arg(datasheet.toHtmlEscaped()));
+        }
         // The 3D body lives in the library, so say so: it is what the preview draws.
         if (!footprint.models.empty()) {
             QStringList names;
@@ -1760,6 +1780,12 @@ QString MainWindow::libraryItemDetailsHtml(int index) const {
                     .arg(tr("Schematic symbol"));
         html += "<table style='font-size:13px;border-collapse:collapse'>";
         row(tr("Description"), qs(symbol.description));
+        const QString symbolDatasheet = qs(pcbv::partProperty(symbol.parameters, "DATASHEET"));
+        if (!symbolDatasheet.isEmpty()) {
+            row(tr("Datasheet"),
+                QString("<a style='color:#8ab4f8' href=\"%1\">%1</a>")
+                    .arg(symbolDatasheet.toHtmlEscaped()));
+        }
         row(tr("Designator"), qs(symbol.designatorPrefix));
         row(tr("Pins"), QString::number(symbol.pins.size()));
         if (symbol.partCount > 1) row(tr("Sub-parts"), QString::number(symbol.partCount));
