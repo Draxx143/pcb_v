@@ -481,6 +481,9 @@ void MainWindow::createMenus() {
                               "with its full parameter set.</p>"
                               "<p>The <b>Board</b> tab draws copper, pads, vias and silkscreen from the "
                               "same data, so no Altium installation is required.</p>"
+                              "<p><b>.PcbLib</b> footprint and <b>.SchLib</b> symbol libraries open as well: "
+                              "the <b>Library</b> tab lists every item and each footprint can be "
+                              "inspected on its own.</p>"
                               "<p>Coordinates are shown in millimetres (1 mil = 0.0254 mm).</p>")
                                .arg(QCoreApplication::applicationVersion()));
     });
@@ -706,6 +709,47 @@ void MainWindow::createComponentTable() {
     });
     tabs_->addTab(comparePage_, tr("Comparison"));
     tabs_->setTabVisible(tabs_->indexOf(comparePage_), false);
+
+    // --- tab: library items (.PcbLib / .SchLib) ------------------------------
+    libraryPage_ = new QWidget(tabs_);
+    QVBoxLayout* libraryLayout = new QVBoxLayout(libraryPage_);
+    libraryLayout->setContentsMargins(8, 8, 8, 8);
+    libraryLayout->setSpacing(6);
+
+    QHBoxLayout* libraryFilterRow = new QHBoxLayout();
+    libraryFilter_ = new QLineEdit(libraryPage_);
+    libraryFilter_->setPlaceholderText(tr("Filter by name or description…"));
+    libraryFilter_->setClearButtonEnabled(true);
+    libraryInfo_ = new QLabel(tr("no library"), libraryPage_);
+    libraryInfo_->setStyleSheet("color:#8a929e;");
+    libraryInfo_->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    libraryFilterRow->addWidget(libraryFilter_, 1);
+    libraryFilterRow->addWidget(libraryInfo_);
+    libraryLayout->addLayout(libraryFilterRow);
+
+    libraryTable_ = new QTableWidget(0, 6, libraryPage_);
+    libraryTable_->setHorizontalHeaderLabels({tr("Name"), tr("Pads"), tr("Pins"), tr("Size (mm)"),
+                                             tr("Height (mm)"), tr("Description")});
+    libraryTable_->setSelectionBehavior(QAbstractItemView::SelectRows);
+    libraryTable_->setSelectionMode(QAbstractItemView::SingleSelection);
+    libraryTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    libraryTable_->setAlternatingRowColors(true);
+    libraryTable_->setSortingEnabled(true);
+    libraryTable_->setShowGrid(false);
+    libraryTable_->verticalHeader()->setVisible(false);
+    libraryTable_->horizontalHeader()->setHighlightSections(false);
+    libraryTable_->horizontalHeader()->setStretchLastSection(true);
+    libraryTable_->setColumnWidth(0, 300);
+    libraryTable_->setColumnWidth(1, 60);
+    libraryTable_->setColumnWidth(2, 60);
+    libraryTable_->setColumnWidth(3, 130);
+    libraryTable_->setColumnWidth(4, 100);
+    connect(libraryTable_, &QTableWidget::itemSelectionChanged, this,
+            &MainWindow::showSelectedLibraryItem);
+    connect(libraryFilter_, &QLineEdit::textChanged, this, &MainWindow::applyLibraryFilter);
+    libraryLayout->addWidget(libraryTable_, 1);
+    tabs_->addTab(libraryPage_, tr("Library"));
+    tabs_->setTabVisible(tabs_->indexOf(libraryPage_), false);
 
     // --- document tabs -------------------------------------------------------
     // Several files stay open at the same time; the tab bar picks which one the views
@@ -1171,7 +1215,8 @@ void MainWindow::openFileDialog() {
     const QString startDir = lastDirectory_;
     const QStringList files = QFileDialog::getOpenFileNames(
         this, tr("Open Altium documents"), startDir,
-        tr("Altium documents (*.PcbDoc *.SchDoc *.pcbdoc *.schdoc);;All files (*)"));
+        tr("Altium documents and libraries (*.PcbDoc *.SchDoc *.PcbLib *.SchLib *.pcbdoc *.schdoc "
+           "*.pcblib *.schlib);;All files (*)"));
     for (const QString& file : files) openDocument(file);
 }
 
@@ -1188,19 +1233,10 @@ void MainWindow::openDocument(const QString& path) {
         return;
     }
     const pcbv::DocType type = pcbv::detectType(path.toStdString());
-    if (type == pcbv::DocType::PcbLib || type == pcbv::DocType::SchLib) {
-        if (!quiet) {
-            QMessageBox::information(
-                this, tr("Not supported yet"),
-                tr("%1\n\nLibrary files (.PcbLib/.SchLib) are planned for a later "
-                   "step. Please open a .PcbDoc or .SchDoc.").arg(info.fileName()));
-        }
-        return;
-    }
     if (type == pcbv::DocType::Unknown) {
         if (!quiet) {
             QMessageBox::warning(this, tr("Unknown file type"),
-                                 tr("%1\n\nExpected an Altium .PcbDoc or .SchDoc file.")
+                                 tr("%1\n\nExpected an Altium .PcbDoc, .SchDoc, .PcbLib or .SchLib file.")
                                      .arg(info.fileName()));
         }
         return;
@@ -1246,6 +1282,7 @@ void MainWindow::openDocument(const QString& path) {
 
     DocumentSlot slot;
     slot.document = outcome.document;
+    slot.library = outcome.library;
     slot.path = absolute;
     slot.title = info.fileName();
     int counter = 1;
@@ -1273,9 +1310,24 @@ void MainWindow::setDocument(const pcbv::Document& document) {
 
     setWindowTitle(QString("%1 — PCB Viewer").arg(qs(document_.fileName)));
 
+    // Libraries are not boards: they show their own tab and have no BOM, nets or
+    // comparison. Footprints are drawn in the Board tab one at a time.
+    if (document_.type == pcbv::DocType::PcbLib || document_.type == pcbv::DocType::SchLib) {
+        showLibraryDocument();
+        return;
+    }
+
     // A comparison belongs to the previous pair of documents.
     if (tabs_ != nullptr && comparePage_ != nullptr) {
         tabs_->setTabVisible(tabs_->indexOf(comparePage_), false);
+    }
+    if (tabs_ != nullptr) {
+        // Back from a library: the document tabs are visible again.
+        if (table_ != nullptr && table_->parentWidget() != nullptr)
+            tabs_->setTabVisible(tabs_->indexOf(table_->parentWidget()), true);
+        if (bomTable_ != nullptr && bomTable_->parentWidget() != nullptr)
+            tabs_->setTabVisible(tabs_->indexOf(bomTable_->parentWidget()), true);
+        if (libraryPage_ != nullptr) tabs_->setTabVisible(tabs_->indexOf(libraryPage_), false);
     }
     populateComponents();
     populateBom();
@@ -1324,6 +1376,297 @@ void MainWindow::setDocument(const pcbv::Document& document) {
 
     statusBar()->showMessage(tr("%1  ·  %2").arg(qs(document_.fileName),
                                                  qs(pcbv::docTypeName(document_.type))));
+    updateActionStates();
+}
+
+// ---------------------------------------------------------------------------
+// Libraries (.PcbLib / .SchLib)
+// ---------------------------------------------------------------------------
+
+void MainWindow::populateLibrary() {
+    if (libraryTable_ == nullptr || active_ < 0 || active_ >= static_cast<int>(slots_.size()))
+        return;
+    const pcbv::Library& library = slots_[static_cast<std::size_t>(active_)].library;
+    const bool footprintLibrary = library.isFootprintLibrary();
+
+    QSignalBlocker blocker(libraryTable_);
+    libraryTable_->setSortingEnabled(false);
+    libraryTable_->setRowCount(0);
+
+    if (footprintLibrary) {
+        libraryTable_->setHorizontalHeaderLabels({tr("Footprint"), tr("Pads"), tr("Tracks"),
+                                                  tr("Size (mm)"), tr("Height (mm)"),
+                                                  tr("Description")});
+        libraryTable_->setRowCount(static_cast<int>(library.footprints.size()));
+        for (int row = 0; row < static_cast<int>(library.footprints.size()); ++row) {
+            const pcbv::LibraryFootprint& footprint = library.footprints[static_cast<std::size_t>(row)];
+            auto* nameItem = new QTableWidgetItem(qs(footprint.name));
+            nameItem->setData(Qt::UserRole + 1, row);
+            nameItem->setToolTip(qs(footprint.description));
+            libraryTable_->setItem(row, 0, nameItem);
+            libraryTable_->setItem(row, 1, new NumericItem(QString::number(footprint.padCount), footprint.padCount));
+            libraryTable_->setItem(row, 2, new NumericItem(QString::number(footprint.trackCount), footprint.trackCount));
+            const QString size = footprint.bounds.valid
+                                     ? QString("%1 x %2")
+                                           .arg(qs(pcbv::formatMm(footprint.bounds.width())),
+                                                qs(pcbv::formatMm(footprint.bounds.height())))
+                                     : QString();
+            libraryTable_->setItem(row, 3, new QTableWidgetItem(size));
+            libraryTable_->setItem(row, 4,
+                                   new NumericItem(footprint.height > 0.0 ? QString::number(footprint.height * 0.0254, 'f', 2) : QString(),
+                                                   static_cast<int>(footprint.height)));
+            libraryTable_->setItem(row, 5, new QTableWidgetItem(qs(footprint.description)));
+        }
+        libraryInfo_->setText(tr("%1 footprints · %2")
+                                  .arg(library.footprints.size())
+                                  .arg(slots_[static_cast<std::size_t>(active_)].title));
+    } else {
+        libraryTable_->setHorizontalHeaderLabels({tr("Symbol"), tr("Pins"), tr("Parts"),
+                                                  tr("Designator"), tr("Height (mm)"),
+                                                  tr("Description")});
+        libraryTable_->setRowCount(static_cast<int>(library.symbols.size()));
+        for (int row = 0; row < static_cast<int>(library.symbols.size()); ++row) {
+            const pcbv::LibrarySymbol& symbol = library.symbols[static_cast<std::size_t>(row)];
+            auto* nameItem = new QTableWidgetItem(qs(symbol.name));
+            nameItem->setData(Qt::UserRole + 1, row);
+            nameItem->setToolTip(qs(symbol.description));
+            libraryTable_->setItem(row, 0, nameItem);
+            libraryTable_->setItem(row, 1, new NumericItem(QString::number(symbol.pins.size()),
+                                                           static_cast<int>(symbol.pins.size())));
+            libraryTable_->setItem(row, 2, new NumericItem(QString::number(symbol.partCount), symbol.partCount));
+            libraryTable_->setItem(row, 3, new QTableWidgetItem(qs(symbol.designatorPrefix)));
+            libraryTable_->setItem(row, 4, new QTableWidgetItem(QString()));
+            libraryTable_->setItem(row, 5, new QTableWidgetItem(qs(symbol.description)));
+        }
+        libraryInfo_->setText(tr("%1 symbols · %2")
+                                  .arg(library.symbols.size())
+                                  .arg(slots_[static_cast<std::size_t>(active_)].title));
+    }
+
+    libraryTable_->setSortingEnabled(true);
+    applyLibraryFilter(libraryFilter_ != nullptr ? libraryFilter_->text() : QString());
+}
+
+void MainWindow::applyLibraryFilter(const QString& text) {
+    if (libraryTable_ == nullptr) return;
+    const QString needle = text.trimmed();
+    for (int row = 0; row < libraryTable_->rowCount(); ++row) {
+        bool matches = needle.isEmpty();
+        for (int column = 0; column < libraryTable_->columnCount() && !matches; ++column) {
+            const QTableWidgetItem* item = libraryTable_->item(row, column);
+            if (item != nullptr && item->text().contains(needle, Qt::CaseInsensitive)) matches = true;
+        }
+        libraryTable_->setRowHidden(row, !matches);
+    }
+}
+
+QString MainWindow::libraryItemDetailsHtml(int index) const {
+    if (active_ < 0 || active_ >= static_cast<int>(slots_.size())) return {};
+    const pcbv::Library& library = slots_[static_cast<std::size_t>(active_)].library;
+
+    QString html = "<div style='font-family:sans-serif;padding:10px 14px'>";
+    auto row = [&html](const QString& key, const QString& value) {
+        if (value.trimmed().isEmpty()) return;
+        html += QString("<tr><td style='color:#9aa0a6;padding:3px 12px 3px 0;white-space:nowrap;"
+                        "vertical-align:top'>%1</td><td style='color:#e3e6ea'>%2</td></tr>")
+                    .arg(key, value);
+    };
+
+    if (library.isFootprintLibrary()) {
+        if (index < 0 || index >= static_cast<int>(library.footprints.size())) return {};
+        const pcbv::LibraryFootprint& footprint = library.footprints[static_cast<std::size_t>(index)];
+        html += QString("<h2 style='margin:0 0 2px 0;color:#ffffff'>%1</h2>").arg(qs(footprint.name));
+        html += QString("<div style='color:#8ab4f8;font-size:13px;margin-bottom:10px'>%1</div>")
+                    .arg(tr("PCB footprint"));
+        html += "<table style='font-size:13px;border-collapse:collapse'>";
+        row(tr("Description"), qs(footprint.description));
+        if (footprint.bounds.valid) {
+            row(tr("Size"), QString("%1 × %2 mm").arg(qs(pcbv::formatMm(footprint.bounds.width())),
+                                                      qs(pcbv::formatMm(footprint.bounds.height()))));
+        }
+        if (footprint.height > 0.0)
+            row(tr("Height"), QString("%1 mm").arg(qs(pcbv::formatMm(footprint.height))));
+        row(tr("Pads"), QString("%1  (%2 tracks · %3 arcs · %4 vias)")
+                            .arg(footprint.padCount)
+                            .arg(footprint.trackCount)
+                            .arg(footprint.arcCount)
+                            .arg(footprint.viaCount));
+        if (footprint.regionCount > 0 || footprint.fillCount > 0) {
+            row(tr("Regions"), QString("%1 region(s) · %2 fill(s)")
+                                   .arg(footprint.regionCount)
+                                   .arg(footprint.fillCount));
+        }
+        html += "</table>";
+
+        if (!footprint.geometry.pads.empty()) {
+            html += QString("<h3 style='color:#e3e6ea;margin:14px 0 4px 0;font-size:13px'>%1</h3>")
+                        .arg(tr("Pads"));
+            html += "<table style='font-size:12px;border-collapse:collapse'>";
+            html += QString("<tr><td style='color:#9aa0a6;padding:2px 12px 2px 0'>%1</td>"
+                            "<td style='color:#9aa0a6;padding:2px 12px 2px 0'>%2</td>"
+                            "<td style='color:#9aa0a6;padding:2px 12px 2px 0'>%3</td>"
+                            "<td style='color:#9aa0a6;padding:2px 12px 2px 0'>%4</td></tr>")
+                        .arg(tr("Pad"), tr("Layer"), tr("Size (mm)"), tr("Position (mm)"));
+            int shown = 0;
+            for (const pcbv::Pad& pad : footprint.geometry.pads) {
+                if (++shown > 200) break;
+                html += QString("<tr><td style='color:#e3e6ea;padding:1px 12px 1px 0'>%1</td>"
+                                "<td style='color:#c8cdd4;padding:1px 12px 1px 0'>%2</td>"
+                                "<td style='color:#c8cdd4;padding:1px 12px 1px 0'>%3 × %4</td>"
+                                "<td style='color:#c8cdd4;padding:1px 12px 1px 0'>%5, %6</td></tr>")
+                            .arg(qs(pad.designator), qs(pad.layerName),
+                                 qs(pcbv::formatMm(pad.width)), qs(pcbv::formatMm(pad.height)),
+                                 qs(pcbv::formatMm(pad.x)), qs(pcbv::formatMm(pad.y)));
+            }
+            html += "</table>";
+            if (static_cast<int>(footprint.geometry.pads.size()) > shown) {
+                html += QString("<div style='color:#8a929e;font-size:12px;margin-top:4px'>%1</div>")
+                            .arg(tr("… %1 more pads; the board view shows all of them.")
+                                     .arg(static_cast<int>(footprint.geometry.pads.size()) - shown));
+            }
+        }
+        if (!footprint.parameters.empty()) {
+            html += QString("<h3 style='color:#e3e6ea;margin:14px 0 4px 0;font-size:13px'>%1</h3>")
+                        .arg(tr("Parameters"));
+            html += "<table style='font-size:12px;border-collapse:collapse'>";
+            for (const pcbv::Property& property : footprint.parameters) {
+                row(qs(property.name), qs(property.value));
+            }
+            html += "</table>";
+        }
+    } else {
+        if (index < 0 || index >= static_cast<int>(library.symbols.size())) return {};
+        const pcbv::LibrarySymbol& symbol = library.symbols[static_cast<std::size_t>(index)];
+        html += QString("<h2 style='margin:0 0 2px 0;color:#ffffff'>%1</h2>").arg(qs(symbol.name));
+        html += QString("<div style='color:#8ab4f8;font-size:13px;margin-bottom:10px'>%1</div>")
+                    .arg(tr("Schematic symbol"));
+        html += "<table style='font-size:13px;border-collapse:collapse'>";
+        row(tr("Description"), qs(symbol.description));
+        row(tr("Designator"), qs(symbol.designatorPrefix));
+        row(tr("Pins"), QString::number(symbol.pins.size()));
+        if (symbol.partCount > 1) row(tr("Sub-parts"), QString::number(symbol.partCount));
+        html += "</table>";
+
+        if (!symbol.pins.empty()) {
+            html += QString("<h3 style='color:#e3e6ea;margin:14px 0 4px 0;font-size:13px'>%1</h3>")
+                        .arg(tr("Pins"));
+            html += "<table style='font-size:12px;border-collapse:collapse'>";
+            html += QString("<tr><td style='color:#9aa0a6;padding:2px 12px 2px 0'>%1</td>"
+                            "<td style='color:#9aa0a6;padding:2px 12px 2px 0'>%2</td>"
+                            "<td style='color:#9aa0a6;padding:2px 12px 2px 0'>%3</td></tr>")
+                        .arg(tr("Designator"), tr("Name"), tr("Type"));
+            for (const pcbv::Pin& pin : symbol.pins) {
+                html += QString("<tr><td style='color:#e3e6ea;padding:1px 12px 1px 0'>%1</td>"
+                                "<td style='color:#c8cdd4;padding:1px 12px 1px 0'>%2</td>"
+                                "<td style='color:#c8cdd4;padding:1px 12px 1px 0'>%3</td></tr>")
+                            .arg(qs(pin.designator), qs(pin.name), qs(pin.electrical));
+            }
+            html += "</table>";
+        }
+        if (!symbol.parameters.empty()) {
+            html += QString("<h3 style='color:#e3e6ea;margin:14px 0 4px 0;font-size:13px'>%1</h3>")
+                        .arg(tr("Parameters"));
+            html += "<table style='font-size:12px;border-collapse:collapse'>";
+            for (const pcbv::Property& property : symbol.parameters) {
+                if (property.value.empty()) continue;
+                row(qs(property.name), qs(property.value));
+            }
+            html += "</table>";
+        }
+    }
+    html += "</div>";
+    return html;
+}
+
+void MainWindow::selectLibraryItem(int index) {
+    if (active_ < 0 || active_ >= static_cast<int>(slots_.size()) || libraryTable_ == nullptr) return;
+    DocumentSlot& slot = slots_[static_cast<std::size_t>(active_)];
+    const pcbv::Library& library = slot.library;
+    const int count = library.isFootprintLibrary() ? static_cast<int>(library.footprints.size())
+                                                   : static_cast<int>(library.symbols.size());
+    if (count == 0) return;
+    index = std::clamp(index, 0, count - 1);
+    slot.libraryItem = index;
+
+    // Select the row that belongs to this item (row order may differ after sorting).
+    {
+        QSignalBlocker blocker(libraryTable_);
+        for (int row = 0; row < libraryTable_->rowCount(); ++row) {
+            const QTableWidgetItem* item = libraryTable_->item(row, 0);
+            if (item != nullptr && item->data(Qt::UserRole + 1).toInt() == index) {
+                libraryTable_->selectRow(row);
+                libraryTable_->scrollToItem(item);
+                break;
+            }
+        }
+    }
+
+    if (detailsView_ != nullptr) detailsView_->setHtml(libraryItemDetailsHtml(index));
+
+    if (library.isFootprintLibrary() && boardView_ != nullptr) {
+        const pcbv::Document preview =
+            pcbv::footprintDocument(library.footprints[static_cast<std::size_t>(index)],
+                                    slot.title.toStdString());
+        boardView_->setDocument(preview);
+        // The layers panel and the summary describe what is on screen.
+        document_.geometry = preview.geometry;
+        document_.bounds = preview.bounds;
+        document_.nets.clear();
+        document_.netSummaries.clear();
+        updateBoardOptions();
+        populateLayers();
+    }
+}
+
+void MainWindow::showSelectedLibraryItem() {
+    if (libraryTable_ == nullptr) return;
+    const int row = libraryTable_->currentRow();
+    if (row < 0) return;
+    const QTableWidgetItem* item = libraryTable_->item(row, 0);
+    if (item == nullptr) return;
+    selectLibraryItem(item->data(Qt::UserRole + 1).toInt());
+}
+
+void MainWindow::showLibraryDocument() {
+    if (active_ < 0 || active_ >= static_cast<int>(slots_.size())) return;
+    DocumentSlot& slot = slots_[static_cast<std::size_t>(active_)];
+    const bool footprintLibrary = slot.library.isFootprintLibrary();
+
+    if (tabs_ != nullptr) {
+        // Documents keep their own tabs; a library shows one list of items instead.
+        if (table_ != nullptr && table_->parentWidget() != nullptr)
+            tabs_->setTabVisible(tabs_->indexOf(table_->parentWidget()), false);
+        if (bomTable_ != nullptr && bomTable_->parentWidget() != nullptr)
+            tabs_->setTabVisible(tabs_->indexOf(bomTable_->parentWidget()), false);
+        if (netlistPage_ != nullptr) tabs_->setTabVisible(tabs_->indexOf(netlistPage_), false);
+        if (comparePage_ != nullptr) tabs_->setTabVisible(tabs_->indexOf(comparePage_), false);
+        if (libraryPage_ != nullptr) {
+            tabs_->setTabVisible(tabs_->indexOf(libraryPage_), true);
+            tabs_->setCurrentWidget(libraryPage_);
+        }
+        const int boardTab = tabs_->indexOf(boardView_);
+        if (boardTab >= 0) tabs_->setTabVisible(boardTab, footprintLibrary);
+    }
+
+    if (measureAction_ != nullptr && measureAction_->isChecked()) measureAction_->setChecked(false);
+    if (threeDAction_ != nullptr && threeDAction_->isChecked()) threeDAction_->setChecked(false);
+
+    populateLibrary();
+    populateStructure();
+    if (footprintLibrary) {
+        selectLibraryItem(slot.libraryItem);
+    } else {
+        document_.geometry = pcbv::PcbGeometry();
+        if (boardView_ != nullptr) boardView_->clear();
+        populateLayers();
+        selectLibraryItem(slot.libraryItem);
+    }
+
+    log(tr("Opened %1  (%2)").arg(qs(document_.fileName), qs(pcbv::docTypeName(document_.type))));
+    log(tr("Library: %1").arg(qs(pcbv::librarySummary(slot.library))));
+    for (const std::string& warning : slot.library.warnings) log(tr("warning: %1").arg(qs(warning)));
+    statusBar()->showMessage(tr("%1  ·  %2").arg(qs(document_.fileName),
+                                                 qs(pcbv::librarySummary(slot.library))));
     updateActionStates();
 }
 
@@ -1480,7 +1823,8 @@ void MainWindow::restoreViewState() {
 
     // Bring back the part that was selected: the table row drives the details pane and the
     // board highlight, so restoring it restores the whole selection.
-    if (slot.selectedComponent >= 0) selectComponentByIndex(slot.selectedComponent);
+    if (slot.selectedComponent >= 0 && slot.library.itemCount() == 0)
+        selectComponentByIndex(slot.selectedComponent);
 
     if (tabs_ != nullptr) {
         const int tab = std::clamp(slot.viewTab, 0, std::max(tabs_->count() - 1, 0));
@@ -1592,6 +1936,11 @@ void MainWindow::clearDocument() {
     if (tabs_ != nullptr && comparePage_ != nullptr) {
         tabs_->setTabVisible(tabs_->indexOf(comparePage_), false);
     }
+    if (libraryTable_ != nullptr) libraryTable_->setRowCount(0);
+    if (libraryInfo_ != nullptr) libraryInfo_->setText(tr("no library"));
+    if (tabs_ != nullptr && libraryPage_ != nullptr) {
+        tabs_->setTabVisible(tabs_->indexOf(libraryPage_), false);
+    }
     updateDocumentTitle();
     updateActionStates();
 }
@@ -1612,7 +1961,32 @@ void MainWindow::updateDocumentTitle() {
 
 void MainWindow::updateActionStates() {
     const bool hasDocument = hasDocument_;
-    const bool hasBoard = hasDocument && boardView_ != nullptr && boardView_->hasGeometry();
+    const bool isLibrary = document_.type == pcbv::DocType::PcbLib ||
+                           document_.type == pcbv::DocType::SchLib;
+    const bool hasBoard = hasDocument && boardView_ != nullptr && boardView_->hasGeometry() &&
+                          (!isLibrary || document_.type == pcbv::DocType::PcbLib);
+
+    if (isLibrary) {
+        // A library has no nets, no BOM and nothing to compare; it only shows items.
+        for (QAction* action : {csvAction_, jsonAction_, htmlAction_, bomCsvAction_, bomHtmlAction_,
+                                netlistCsvAction_, exportAction_, copyAction_, compareAction_,
+                                findAction_}) {
+            if (action != nullptr) action->setEnabled(false);
+        }
+        for (QAction* action : {svgAction_, printAction_, fitAction_, zoomInAction_,
+                                zoomOutAction_, measureAction_, zoomPartAction_}) {
+            if (action != nullptr) action->setEnabled(hasBoard);
+        }
+        if (layersDock_ != nullptr) layersDock_->setEnabled(hasBoard);
+        if (summaryAction_ != nullptr) summaryAction_->setEnabled(hasDocument);
+        for (QAction* action : {closeAction_, closeAllAction_}) {
+            if (action != nullptr) action->setEnabled(hasDocument);
+        }
+        const bool many = slots_.size() > 1;
+        if (nextDocumentAction_ != nullptr) nextDocumentAction_->setEnabled(many);
+        if (previousDocumentAction_ != nullptr) previousDocumentAction_->setEnabled(many);
+        return;
+    }
 
     // Document level commands (BOM, reports, summary).
     for (QAction* action : {csvAction_, bomCsvAction_, bomHtmlAction_, netlistCsvAction_,

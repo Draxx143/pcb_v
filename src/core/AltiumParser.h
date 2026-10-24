@@ -4,6 +4,7 @@
 
 #include <string>
 
+#include "Library.h"
 #include "Model.h"
 
 namespace pcbv {
@@ -17,6 +18,8 @@ struct ParseOutcome {
     /// Printable preview of the first bytes of the file (helps diagnosing bad files).
     std::string signature;
     Document document;
+    /// Filled for .PcbLib / .SchLib files (footprints or symbols), empty otherwise.
+    Library library;
 };
 
 /// Detects the document type from the file extension (case-insensitive).

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(PcbAiViewer VERSION 0.10.0 LANGUAGES CXX)
+project(PcbAiViewer VERSION 0.11.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -34,6 +34,8 @@ add_library(pcbv_core STATIC
     src/core/BoardRender.h
     src/core/BoardSvg.cpp
     src/core/LayerStyle.h
+    src/core/Library.cpp
+    src/core/Library.h
     src/core/Export.cpp
     src/core/Export.h
     src/core/Model.h

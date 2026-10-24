@@ -12,6 +12,7 @@
 #include "AltiumInternal.h"
 #include "BoardIndex.h"
 #include "AltiumText.h"
+#include "Library.h"
 #include "CompoundFile.h"
 
 namespace pcbv {
@@ -506,6 +507,12 @@ bool asciiLooksLikePcb(const std::vector<std::uint8_t>& bytes) {
 // ---------------------------------------------------------------------------
 
 namespace detail {
+
+std::vector<SchRecord> readSchRecordStream(const std::vector<std::uint8_t>& stream) {
+    // The frame reader lives in this file's anonymous namespace.
+    return ::pcbv::readBinarySchRecords(stream);
+}
+
 namespace {
 
 /// Altium indirection: a Comment of "=Part Number" means "use the Part Number parameter".
@@ -763,13 +770,6 @@ ParseOutcome parseFile(const std::string& path) {
             return outcome;
         }
 
-        if (doc.type == DocType::PcbLib || doc.type == DocType::SchLib) {
-            outcome.detected = isOle ? "OLE2 compound file" : "unknown";
-            outcome.error =
-                "Library files (.PcbLib/.SchLib) are not supported yet — open a .PcbDoc or .SchDoc.";
-            return outcome;
-        }
-
         if (isOle) {
             outcome.detected = "OLE2 compound file (binary Altium)";
             CompoundFile cf;
@@ -780,7 +780,16 @@ ParseOutcome parseFile(const std::string& path) {
             }
             doc.structure = cf.root().children;
 
-            if (doc.type == DocType::PcbDoc) {
+            if (doc.type == DocType::PcbLib || doc.type == DocType::SchLib) {
+                outcome.library.type = doc.type;
+                outcome.library.fileName = doc.fileName;
+                std::string libraryError;
+                if (!readBinaryLibrary(cf, outcome.library, libraryError)) {
+                    outcome.error = libraryError;
+                    return outcome;
+                }
+                buildLibraryDocument(doc, outcome.library);
+            } else if (doc.type == DocType::PcbDoc) {
                 parseBinaryPcb(cf, doc);
             } else if (doc.type == DocType::SchDoc) {
                 doc.container = Container::CompoundBinary;
@@ -796,8 +805,16 @@ ParseOutcome parseFile(const std::string& path) {
             }
         } else if (looksLikeAsciiAltium(head)) {
             outcome.detected = "Altium ASCII export (plain text records)";
-            const bool isPcb = asciiLooksLikePcb(bytes);
-            if (isPcb) {
+            if (doc.type == DocType::PcbLib || doc.type == DocType::SchLib) {
+                outcome.library.type = doc.type;
+                outcome.library.fileName = doc.fileName;
+                readAsciiLibrary(bytes, outcome.library);
+                buildLibraryDocument(doc, outcome.library);
+                if (outcome.library.itemCount() == 0) {
+                    outcome.error = "The ASCII library was recognised but contains no items.";
+                    return outcome;
+                }
+            } else if (asciiLooksLikePcb(bytes)) {
                 doc.type = DocType::PcbDoc;
                 detail::parseAsciiPcb(bytes, doc);
             } else {
@@ -813,7 +830,8 @@ ParseOutcome parseFile(const std::string& path) {
             return outcome;
         }
 
-        if (doc.container == Container::AsciiText && doc.recordTypes.empty()) {
+        const bool isLibrary = doc.type == DocType::PcbLib || doc.type == DocType::SchLib;
+        if (doc.container == Container::AsciiText && doc.recordTypes.empty() && !isLibrary) {
             outcome.error =
                 "The ASCII file was recognised but contains no records (|RECORD=... lines).";
             return outcome;

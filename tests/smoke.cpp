@@ -16,6 +16,7 @@
 #include "core/Compare.h"
 #include "core/Netlist.h"
 #include "core/Recent.h"
+#include "core/Library.h"
 #include "core/Export.h"
 
 namespace {
@@ -159,6 +160,71 @@ void selfTest() {
         const auto trimmed = pcbv::pushRecent(longList, "/new.PcbDoc", 10);
         check(trimmed.size() == 10 && trimmed.front() == "/new.PcbDoc",
               "recent: the list never grows past ten entries");
+    }
+
+    // --- libraries (.PcbLib / .SchLib) --------------------------------------
+    {
+        const std::string libPath = "/tmp/pcbv-smoke-footprints.PcbLib";
+        const std::string libText =
+            "|RECORD=Library|FILENAME=test.PcbLib|KIND=Protel_Advanced_PCB_Library\r\n"
+            "|RECORD=Component|ID=0|PATTERN=SOIC-8|HEIGHT=60mil|DESCRIPTION=8-pin SOIC\r\n"
+            "|RECORD=Pad|COMPONENT=0|NAME=1|LAYER=TOP|X=0mil|Y=0mil|XSIZE=20mil|YSIZE=10mil|"
+            "HOLESIZE=0mil\r\n"
+            "|RECORD=Pad|COMPONENT=0|NAME=2|LAYER=TOP|X=50mil|Y=0mil|XSIZE=20mil|YSIZE=10mil|"
+            "HOLESIZE=0mil\r\n"
+            "|RECORD=Track|COMPONENT=0|LAYER=TOP|X1=-20mil|Y1=5mil|X2=70mil|Y2=5mil|WIDTH=6mil\r\n"
+            "|RECORD=Text|COMPONENT=0|LAYER=TOPOVERLAY|X=10mil|Y=20mil|TEXT=SOIC-8\r\n";
+        if (FILE* f = std::fopen(libPath.c_str(), "wb")) {
+            std::fwrite(libText.data(), 1, libText.size(), f);
+            std::fclose(f);
+        }
+        const pcbv::ParseOutcome lib = pcbv::parseFile(libPath);
+        check(lib.ok, "ASCII footprint library is parsed");
+        check(lib.library.type == pcbv::DocType::PcbLib, "ASCII library keeps the PcbLib type");
+        check(lib.library.footprints.size() == 1, "one footprint is listed");
+        if (!lib.library.footprints.empty()) {
+            const pcbv::LibraryFootprint& footprint = lib.library.footprints.front();
+            check(footprint.name == "SOIC-8", "footprint keeps its pattern name");
+            check(footprint.description == "8-pin SOIC", "footprint description is read");
+            check(footprint.padCount == 2, "footprint pads are counted");
+            check(footprint.trackCount == 1, "footprint tracks are counted");
+            check(footprint.geometry.pads.size() == 2 &&
+                      footprint.geometry.pads[1].x > 49.0 && footprint.geometry.pads[1].x < 51.0,
+                  "footprint pad positions are read in mil");
+            check(footprint.bounds.valid && footprint.bounds.width() > 84.0,
+                  "footprint extents are computed");
+        }
+        check(lib.document.components.size() == 1, "a library becomes one component row per item");
+        check(pcbv::libraryToCsv(lib.library).find("Footprint,SOIC-8") != std::string::npos,
+              "library CSV lists the footprint");
+        std::remove(libPath.c_str());
+
+        const std::string schLibPath = "/tmp/pcbv-smoke-symbols.SchLib";
+        const std::string schLibText =
+            "|HEADER=Protel for Windows - Schematic Capture Ascii File Version 5.0|WEIGHT=3\r\n"
+            "|RECORD=1|LIBREFERENCE=NE555|COMPONENTDESCRIPTION=Timer\r\n"
+            "|RECORD=34|OWNERINDEX=0|TEXT=U?\r\n"
+            "|RECORD=2|OWNERINDEX=0|DESIGNATOR=1|NAME=GND|ELECTRICAL=7\r\n"
+            "|RECORD=2|OWNERINDEX=0|DESIGNATOR=2|NAME=TRIG|ELECTRICAL=0\r\n"
+            "|RECORD=41|OWNERINDEX=0|NAME=Part Number|TEXT=NE555P\r\n";
+        if (FILE* f = std::fopen(schLibPath.c_str(), "wb")) {
+            std::fwrite(schLibText.data(), 1, schLibText.size(), f);
+            std::fclose(f);
+        }
+        const pcbv::ParseOutcome schLib = pcbv::parseFile(schLibPath);
+        check(schLib.ok, "ASCII symbol library is parsed");
+        check(schLib.library.symbols.size() == 1, "one symbol is listed");
+        if (!schLib.library.symbols.empty()) {
+            const pcbv::LibrarySymbol& symbol = schLib.library.symbols.front();
+            check(symbol.name == "NE555", "symbol keeps its library reference");
+            check(symbol.pins.size() == 2, "symbol pins are read");
+            check(symbol.description == "Timer", "symbol description is read");
+            bool hasPartNumber = false;
+            for (const pcbv::Property& property : symbol.parameters)
+                if (property.name == "Part Number" && property.value == "NE555P") hasPartNumber = true;
+            check(hasPartNumber, "symbol parameters are kept");
+        }
+        std::remove(schLibPath.c_str());
     }
 
     // --- grouped BOM and revision comparison --------------------------------

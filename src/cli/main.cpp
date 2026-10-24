@@ -23,6 +23,7 @@
 #include "core/Compare.h"
 #include "core/Netlist.h"
 #include "core/Export.h"
+#include "core/Library.h"
 
 namespace {
 
@@ -46,13 +47,15 @@ void printUsage() {
         "  pcbv-cli --compare-html <out.html> <left> <right>\n"
         "  pcbv-cli --details <designator> <file>   print every parameter of one part\n"
         "  pcbv-cli --inspect <file>                show how the file was detected/decoded\n"
+        "  pcbv-cli --lib   <file.PcbLib|.SchLib>   footprints / symbols of a library\n"
+        "  pcbv-cli --lib-csv <out.csv> <file>      the same listing as CSV\n"
         "\n"
         "Options:\n"
         "  -h, --help      show this help\n"
         "\n"
         "Notes:\n"
         "  * Coordinates are reported in mil and mm (1 mil = 0.0254 mm).\n"
-        "  * .PcbLib / .SchLib support is planned for a later step.\n";
+        "  * .PcbLib (footprints) and .SchLib (symbols) files are read directly.\n";
 }
 
 std::size_t utf8Length(const std::string& text) {
@@ -216,11 +219,13 @@ int main(int argc, char** argv) {
     std::string compareLeft;
     std::string compareRight;
 
-    if (mode == "--list" || mode == "--summary" || mode == "--nets" || mode == "--netlist") {
+    if (mode == "--list" || mode == "--summary" || mode == "--nets" || mode == "--netlist" ||
+        mode == "--lib") {
         if (args.size() < 2) return fail("missing input file");
         inputPath = args[1];
     } else if (mode == "--csv" || mode == "--json" || mode == "--html" || mode == "--svg" ||
-               mode == "--bom" || mode == "--bom-html" || mode == "--netlist-csv") {
+               mode == "--bom" || mode == "--bom-html" || mode == "--netlist-csv" ||
+               mode == "--lib-csv") {
         if (args.size() < 3) return fail("usage: " + mode + " <output> <input>");
         outputPath = args[1];
         inputPath = args[2];
@@ -279,6 +284,25 @@ int main(int argc, char** argv) {
         std::cout << pcbv::toSummaryText(doc);
         return 0;
     }
+    if (mode == "--lib") {
+        if (result.library.itemCount() == 0) {
+            std::cerr << "error: this file is not a library (" << pcbv::docTypeName(doc.type)
+                      << ").\n";
+            return 1;
+        }
+        std::cout << pcbv::libraryToText(result.library);
+        return 0;
+    }
+    if (mode == "--lib-csv") {
+        if (result.library.itemCount() == 0) {
+            std::cerr << "error: this file is not a library.\n";
+            return 1;
+        }
+        if (!writeFile(outputPath, pcbv::libraryToCsv(result.library)))
+            return fail("cannot write " + outputPath);
+        std::cout << "wrote " << outputPath << " (" << result.library.itemCount() << " items)\n";
+        return 0;
+    }
     if (mode == "--csv") {
         if (!writeFile(outputPath, pcbv::toCsv(doc))) return fail("cannot write " + outputPath);
         std::cout << "wrote " << outputPath << " (" << doc.components.size() << " components)\n";
@@ -307,15 +331,23 @@ int main(int argc, char** argv) {
     if (mode == "--svg") {
         pcbv::BoardRenderOptions renderOptions;
         renderOptions.hiddenLayers = pcbv::defaultHiddenLayers();  // same defaults as the GUI
-        const std::string svg = pcbv::toSvg(doc, renderOptions);
+
+        // A library has no board: draw its first footprint instead.
+        pcbv::Document drawing = doc;
+        std::string what = "board";
+        if (!result.library.footprints.empty()) {
+            drawing = pcbv::footprintDocument(result.library.footprints.front(), doc.fileName);
+            what = "footprint '" + result.library.footprints.front().name + "'";
+        }
+        const std::string svg = pcbv::toSvg(drawing, renderOptions);
         if (svg.empty()) {
             std::cerr << "error: no PCB geometry in this document (is it a schematic?)\n";
             return 1;
         }
         if (!writeFile(outputPath, svg)) return fail("cannot write " + outputPath);
-        std::cout << "wrote " << outputPath << " (" << doc.geometry.tracks.size() << " tracks, "
-                  << doc.geometry.pads.size() << " pads, " << doc.geometry.vias.size()
-                  << " vias)\n";
+        std::cout << "wrote " << outputPath << " (" << what << ": "
+                  << drawing.geometry.tracks.size() << " tracks, " << drawing.geometry.pads.size()
+                  << " pads, " << drawing.geometry.vias.size() << " vias)\n";
         return 0;
     }
     if (mode == "--nets") {

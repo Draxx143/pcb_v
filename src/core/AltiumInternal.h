@@ -22,6 +22,9 @@ struct SchRecord {
 /// Reads the FileHeader stream of a binary SchDoc into records.
 std::vector<SchRecord> readBinarySchRecords(const std::vector<std::uint8_t>& stream);
 
+/// Reads a schematic record stream (SchDoc FileHeader or one .SchLib symbol) into records.
+std::vector<SchRecord> readSchRecordStream(const std::vector<std::uint8_t>& stream);
+
 /// Populates components/pins/statistics of `document` from schematic records.
 void buildSchDocument(const std::vector<SchRecord>& records, Document& document);
 

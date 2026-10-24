@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "core/Compare.h"
+#include "core/Library.h"
 #include "core/Model.h"
 
 class QAction;
@@ -85,6 +86,8 @@ private:
         QString bomFilter;
         QString netlistFilter;
         int viewTab = 0;
+        pcbv::Library library;     ///< footprints / symbols when this tab is a library
+        int libraryItem = 0;       ///< selected footprint / symbol
         QString comparisonHtml;
         QString comparisonHint;
     };
@@ -113,6 +116,12 @@ private:
     void restoreViewState();
     void clearDocument();
     void updateDocumentTitle();
+    void showLibraryDocument();
+    void populateLibrary();
+    void selectLibraryItem(int index);
+    void showSelectedLibraryItem();
+    void applyLibraryFilter(const QString& text);
+    QString libraryItemDetailsHtml(int index) const;
     void rememberRecent(const QString& path);
     void rebuildRecentMenu();
     void restoreSession();
@@ -134,6 +143,10 @@ private:
     QMenu* recentMenu_ = nullptr;
 
     QTabWidget* tabs_ = nullptr;
+    QWidget* libraryPage_ = nullptr;
+    QTableWidget* libraryTable_ = nullptr;
+    QLabel* libraryInfo_ = nullptr;
+    QLineEdit* libraryFilter_ = nullptr;
     BoardView* boardView_ = nullptr;
     QTableWidget* table_ = nullptr;
     QTableWidget* bomTable_ = nullptr;
