@@ -75,12 +75,18 @@ cd project_pcb_problem_finder
 bash setup_linux.sh
 ```
 
-اگر قبلاً پوشه را با نام قدیمی (`~/pcb_v`) گرفته‌اید، فقط اسمش را عوض کنید:
+اگر قبلاً پوشه را با نام قدیمی (`~/pcb_v`) گرفته‌اید، یک دستور این کار را انجام می‌دهد
+(تغییر نام + به‌روزرسانی + ثبت میان‌بر منو با مسیر جدید):
+
+```bash
+cd ~/pcb_v && bash tools/rename_project_folder.sh
+```
+
+یا دستی:
 
 ```bash
 mv ~/pcb_v ~/project_pcb_problem_finder
-cd ~/project_pcb_problem_finder
-./run.sh                                   # مسیرها نسبی‌اند و چیزی خراب نمی‌شود
+cd ~/project_pcb_problem_finder && ./run.sh    # همهٔ مسیرها نسبی‌اند، چیزی خراب نمی‌شود
 ```
 
 اگر با `--desktop` میان‌بر منو ساخته بودید، یک‌بار دیگر همان دستور را بزنید تا مسیر جدید
@@ -302,6 +308,11 @@ project_pcb_problem_finder/      (همان مخزن pcb_v)
 ├── tests/
 │   ├── smoke.cpp           تست سلامت پارسر
 │   └── fetch_samples.sh    دانلود فایل نمونه
+├── library/                کتابخانهٔ آماده (`.pcbvlib`) + مجوز/منابع آن
+├── tools/
+│   ├── build_library.py    ساخت دوبارهٔ کتابخانه از kicad-footprints/packages3D
+│   ├── pack_library.py     ساخت zip کتابخانه برای دانلود
+│   └── rename_project_folder.sh  تغییر نام پوشهٔ پروژه به نام جدید
 ├── samples/                فایل‌های تست شما (در گیت نادیده گرفته می‌شود)
 └── pcb_viewer.zip          اسکلت اولیهٔ آپلودشده (دست‌نخورده، فقط برای مرجع)
 ```
