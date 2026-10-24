@@ -326,6 +326,23 @@ void parseAsciiPcb(const std::vector<std::uint8_t>& bytes, Document& document) {
         "open the binary .PcbDoc or the .SchDoc to see them.");
 }
 
+std::vector<SchRecord> readAsciiSchRecords(const std::vector<std::uint8_t>& bytes) {
+    const std::vector<std::vector<Property>> records = readAsciiRecords(bytes);
+    std::vector<SchRecord> out;
+    out.reserve(records.size());
+    int objectIndex = 0;
+    for (std::size_t i = 0; i < records.size(); ++i) {
+        SchRecord record;
+        record.props = records[i];
+        const std::string typeText = valueOf(record.props, "RECORD");
+        record.type = typeText.empty() ? -1 : parseInt(typeText, -1);
+        const bool isFileHeader = (record.type < 0 && i == 0);
+        record.index = isFileHeader ? -1 : objectIndex++;
+        out.push_back(std::move(record));
+    }
+    return out;
+}
+
 void parseAsciiSch(const std::vector<std::uint8_t>& bytes, Document& document) {
     const std::vector<std::vector<Property>> records = readAsciiRecords(bytes);
     document.container = Container::AsciiText;

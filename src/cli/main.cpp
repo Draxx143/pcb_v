@@ -338,6 +338,9 @@ int main(int argc, char** argv) {
         if (!result.library.footprints.empty()) {
             drawing = pcbv::footprintDocument(result.library.footprints.front(), doc.fileName);
             what = "footprint '" + result.library.footprints.front().name + "'";
+        } else if (!result.library.symbols.empty()) {
+            drawing = pcbv::symbolDocument(result.library.symbols.front(), doc.fileName);
+            what = "symbol '" + result.library.symbols.front().name + "'";
         }
         const std::string svg = pcbv::toSvg(drawing, renderOptions);
         if (svg.empty()) {

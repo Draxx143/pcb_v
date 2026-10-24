@@ -111,6 +111,7 @@ struct TextFeature {
     double rotation = 0.0;
     int layer = 0;
     std::string text;
+    std::uint32_t color = 0;  // 0xRRGGBB override (0 = use the layer colour)
 };
 
 /// Every drawable primitive of a PCB document (used by the board view / SVG export).

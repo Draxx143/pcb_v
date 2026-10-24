@@ -14,6 +14,7 @@
 #include "Library.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <iomanip>
 #include <map>
@@ -31,6 +32,9 @@ using text::parseNumber;
 using text::valueOf;
 
 constexpr std::uint32_t kBlockSizeMask = 0x00FFFFFF;
+
+// Defined further down, next to the schematic record handling.
+void buildSymbols(const std::vector<detail::SchRecord>& records, Library& library);
 
 std::uint16_t rdU16(const std::vector<std::uint8_t>& b, std::size_t off) {
     if (off + 2 > b.size()) return 0;
@@ -449,41 +453,41 @@ bool readSchLibrary(CompoundFile& file, Library& library, std::string& error) {
     }
 
     for (std::size_t i = 0; i < storages.size(); ++i) {
-        LibrarySymbol symbol;
-        symbol.name = i < libRefs.size() ? libRefs[i] : storages[i];
         const std::string storageName = storages[i];
-
         const std::vector<std::uint8_t> stream = file.stream(storageName + "/Data");
         if (stream.empty()) {
+            LibrarySymbol symbol;
+            symbol.name = i < libRefs.size() ? libRefs[i] : storageName;
             library.warnings.push_back("Symbol '" + symbol.name + "' has no data stream.");
             library.symbols.push_back(std::move(symbol));
             continue;
         }
 
-        const std::vector<detail::SchRecord> records = detail::readSchRecordStream(stream);
-        Document temporary;
-        detail::buildSchDocument(records, temporary);
-        if (!temporary.components.empty()) {
-            const Component& component = temporary.components.front();
-            if (!component.name.empty()) symbol.name = component.name;
-            symbol.description = component.description;
-            symbol.partCount = component.partCount > 0 ? component.partCount : 1;
-            symbol.pins = component.pins;
-            symbol.parameters = component.properties;
-            symbol.designatorPrefix = component.designator;
-        }
-        // The default designator lives in its own record; take it from the parameters.
-        for (const Property& property : symbol.parameters) {
-            if (text::equalsNoCase(property.name, "DESIGNATOR")) {
-                symbol.designatorPrefix = property.value;
-                break;
+        const std::size_t before = library.symbols.size();
+        buildSymbols(detail::readSchRecordStream(stream), library);
+
+        for (std::size_t index = before; index < library.symbols.size(); ++index) {
+            LibrarySymbol& symbol = library.symbols[index];
+            // The full name: the record's LibReference, else the FileHeader LibRef entry,
+            // else the (31 character) storage name.
+            if (symbol.name.empty()) symbol.name = i < libRefs.size() ? libRefs[i] : storageName;
+            for (const Property& property : symbol.parameters) {
+                if (text::equalsNoCase(property.name, "DESIGNATOR") && !property.value.empty()) {
+                    symbol.designatorPrefix = property.value;
+                    break;
+                }
+            }
+            if (symbol.pins.empty() && symbol.parameters.empty() && symbol.shapes.empty()) {
+                library.warnings.push_back("Symbol '" + symbol.name +
+                                           "' was found but contains no readable records.");
             }
         }
-        if (symbol.pins.empty() && symbol.parameters.empty()) {
-            library.warnings.push_back("Symbol '" + symbol.name +
-                                       "' was found but contains no readable records.");
+        if (library.symbols.size() == before) {
+            LibrarySymbol symbol;
+            symbol.name = i < libRefs.size() ? libRefs[i] : storageName;
+            library.symbols.push_back(std::move(symbol));
+            library.warnings.push_back("Symbol '" + symbol.name + "' contains no records.");
         }
-        library.symbols.push_back(std::move(symbol));
     }
 
     if (library.symbols.empty()) {
@@ -603,24 +607,180 @@ void readAsciiPcbLibrary(const std::vector<std::uint8_t>& bytes, Library& librar
 }
 
 void readAsciiSchLibrary(const std::vector<std::uint8_t>& bytes, Library& library) {
-    Document temporary;
-    detail::parseAsciiSch(bytes, temporary);
-    library.formatVersion = temporary.formatVersion;
+    const std::vector<detail::SchRecord> records = detail::readAsciiSchRecords(bytes);
+    buildSymbols(records, library);
 
-    for (const Component& component : temporary.components) {
-        LibrarySymbol symbol;
-        symbol.name = component.name.empty() ? component.comment : component.name;
-        if (symbol.name.empty()) symbol.name = "Symbol " + std::to_string(library.symbols.size() + 1);
-        symbol.description = component.description;
-        symbol.partCount = component.partCount > 0 ? component.partCount : 1;
-        symbol.pins = component.pins;
-        symbol.parameters = component.properties;
-        library.symbols.push_back(std::move(symbol));
+    for (std::size_t i = 0; i < library.symbols.size(); ++i) {
+        LibrarySymbol& symbol = library.symbols[i];
+        if (symbol.name.empty()) symbol.name = "Symbol " + std::to_string(i + 1);
+        for (const Property& property : symbol.parameters) {
+            if (text::equalsNoCase(property.name, "DESIGNATOR") && symbol.designatorPrefix.empty())
+                symbol.designatorPrefix = property.value;
+            if (text::equalsNoCase(property.name, "DESCRIPTION") && symbol.description.empty())
+                symbol.description = property.value;
+        }
     }
-    for (const std::string& warning : temporary.warnings) library.warnings.push_back(warning);
     if (library.symbols.empty()) {
         library.warnings.push_back("No RECORD=1 (symbol) entries were found in this ASCII library.");
     }
+}
+
+// ---------------------------------------------------------------------------
+// SchLib symbol graphics
+// ---------------------------------------------------------------------------
+
+/// Schematic coordinates are stored in 10 mil units (like SchDoc LOCATION.X).
+constexpr double kSchUnit = 10.0;
+
+std::string pinElectricalName(int value) { return text::pinElectricalName(value); }
+
+/// Applies one schematic record to a symbol: pins, texts, parameters and the drawing
+/// primitives (line, polyline, rectangle, round rectangle, arc, ellipse, text).
+void applySymbolRecord(const std::vector<Property>& props, int type, LibrarySymbol& symbol) {
+    auto number = [&props](const char* key) { return text::parseNumber(valueOf(props, key)); };
+    auto present = [&props](const char* key) { return text::find(props, key) != nullptr; };
+
+    switch (type) {
+        case 2: {  // pin
+            SymbolPin pin;
+            pin.designator = valueOf(props, "DESIGNATOR");
+            pin.name = valueOf(props, "NAME");
+            pin.electrical = pinElectricalName(text::parseInt(valueOf(props, "ELECTRICAL"), 0));
+            pin.x = number("LOCATION.X") * kSchUnit;
+            pin.y = number("LOCATION.Y") * kSchUnit;
+            pin.length = number("PINLENGTH") * kSchUnit;
+            const int conglomerate = text::parseInt(valueOf(props, "PINCONGLOMERATE"), 0);
+            pin.rotation = (conglomerate & 0x03) * 90;
+            pin.hidden = (conglomerate & 0x04) != 0 ||
+                         text::equalsNoCase(valueOf(props, "HIDDEN"), "T");
+            pin.showName = (conglomerate & 0x08) != 0;
+            pin.showDesignator = (conglomerate & 0x10) != 0;
+            pin.ownerPart = std::max(1, text::parseInt(valueOf(props, "OWNERPARTID"), 1));
+
+            Pin row;
+            row.name = pin.name;
+            row.designator = pin.designator;
+            row.electrical = pin.electrical;
+            row.ownerPart = pin.ownerPart;
+            symbol.pins.push_back(row);
+            symbol.pinGeometry.push_back(pin);
+            break;
+        }
+        case 34: {  // designator text ("U?")
+            const std::string value = valueOf(props, "TEXT");
+            if (!value.empty()) symbol.designatorPrefix = value;
+            break;
+        }
+        case 41: {  // parameter
+            const std::string name = valueOf(props, "NAME");
+            if (name.empty()) break;
+            symbol.parameters.push_back(Property{name, valueOf(props, "TEXT")});
+            break;
+        }
+        case 13: {  // line
+            SymbolShape shape;
+            shape.kind = SymbolShape::Kind::Line;
+            shape.points = {Point{number("X1") * kSchUnit, number("Y1") * kSchUnit},
+                            Point{number("X2") * kSchUnit, number("Y2") * kSchUnit}};
+            shape.width = number("WIDTH") * kSchUnit;
+            symbol.shapes.push_back(shape);
+            break;
+        }
+        case 6:   // polyline
+        case 7: {  // polygon
+            SymbolShape shape;
+            shape.kind = SymbolShape::Kind::Polyline;
+            shape.fill = type == 7 && text::equalsNoCase(valueOf(props, "FILLED"), "T") ? 2 : 0;
+            const int count = text::parseInt(valueOf(props, "LOCATIONCOUNT"), 0);
+            for (int i = 0; i < count; ++i) {
+                if (!present(("X" + std::to_string(i + 1)).c_str())) break;
+                shape.points.push_back(Point{number(("X" + std::to_string(i + 1)).c_str()) * kSchUnit,
+                                             number(("Y" + std::to_string(i + 1)).c_str()) * kSchUnit});
+            }
+            shape.width = number("WIDTH") * kSchUnit;
+            if (shape.points.size() >= 2) symbol.shapes.push_back(shape);
+            break;
+        }
+        case 14:    // rectangle
+        case 10: {  // round rectangle
+            SymbolShape shape;
+            shape.kind = type == 10 ? SymbolShape::Kind::RoundRectangle : SymbolShape::Kind::Rectangle;
+            shape.points = {Point{number("LOCATION.X") * kSchUnit, number("LOCATION.Y") * kSchUnit},
+                            Point{number("CORNER.X") * kSchUnit, number("CORNER.Y") * kSchUnit}};
+            shape.fill = text::equalsNoCase(valueOf(props, "FILLED"), "T") ? 2 : 1;
+            shape.width = present("LINEWIDTH") ? number("LINEWIDTH") * kSchUnit : 0.0;
+            symbol.shapes.push_back(shape);
+            break;
+        }
+        case 12: {  // arc
+            SymbolShape shape;
+            shape.kind = SymbolShape::Kind::Arc;
+            shape.points = {Point{number("LOCATION.X") * kSchUnit, number("LOCATION.Y") * kSchUnit}};
+            shape.radius = number("RADIUS") * kSchUnit;
+            shape.startAngle = number("STARTANGLE");
+            shape.endAngle = number("ENDANGLE");
+            shape.width = number("WIDTH") * kSchUnit;
+            if (shape.radius > 0.0) symbol.shapes.push_back(shape);
+            break;
+        }
+        case 8: {  // ellipse
+            SymbolShape shape;
+            shape.kind = SymbolShape::Kind::Ellipse;
+            shape.points = {Point{number("LOCATION.X") * kSchUnit, number("LOCATION.Y") * kSchUnit}};
+            shape.radius = number("RADIUS") * kSchUnit;
+            shape.secondaryRadius = present("SECONDARYRADIUS") ? number("SECONDARYRADIUS") * kSchUnit
+                                                               : shape.radius;
+            shape.fill = text::equalsNoCase(valueOf(props, "FILLED"), "T") ? 2 : 1;
+            symbol.shapes.push_back(shape);
+            break;
+        }
+        case 28: {  // text
+            SymbolShape shape;
+            shape.kind = SymbolShape::Kind::Text;
+            shape.text = valueOf(props, "TEXT");
+            shape.points = {Point{number("LOCATION.X") * kSchUnit, number("LOCATION.Y") * kSchUnit}};
+            shape.rotation = number("ORIENTATION");
+            shape.textHeight = present("HEIGHT") ? number("HEIGHT") * kSchUnit : 60.0;
+            if (!shape.text.empty()) symbol.shapes.push_back(shape);
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+/// Walks a record stream (binary SchLib symbol or ASCII library) and fills the symbols.
+void buildSymbols(const std::vector<detail::SchRecord>& records, Library& library) {
+    std::map<int, std::size_t> byIndex;
+    int lastSymbol = -1;
+    std::string version;
+
+    for (const detail::SchRecord& record : records) {
+        if (record.type < 0) {
+            const std::string header = text::valueOf(record.props, "HEADER");
+            if (!header.empty()) version = header;
+            continue;
+        }
+        if (record.type == 1) {
+            LibrarySymbol symbol;
+            symbol.name = valueOf(record.props, "LIBREFERENCE");
+            if (symbol.name.empty()) symbol.name = valueOf(record.props, "LIBREF");
+            symbol.description = valueOf(record.props, "COMPONENTDESCRIPTION");
+            symbol.partCount = std::max(1, text::parseInt(valueOf(record.props, "PARTCOUNT"), 2) - 1);
+            for (const Property& property : record.props) symbol.parameters.push_back(property);
+            byIndex[record.index] = library.symbols.size();
+            library.symbols.push_back(std::move(symbol));
+            lastSymbol = record.index;
+            continue;
+        }
+
+        int owner = text::parseInt(valueOf(record.props, "OWNERINDEX"), -1);
+        if (owner < 0) owner = lastSymbol;
+        const auto it = byIndex.find(owner);
+        if (it == byIndex.end() || it->second >= library.symbols.size()) continue;
+        applySymbolRecord(record.props, record.type, library.symbols[it->second]);
+    }
+    if (library.formatVersion.empty() && !version.empty()) library.formatVersion = version;
 }
 
 } // namespace
@@ -817,14 +977,14 @@ std::string libraryToText(const Library& library) {
     } else {
         out << "\n" << std::left;
         out << std::setw(34) << "Symbol" << std::right << std::setw(6) << "Pins"
-            << std::setw(7) << "Parts" << "   Description\n";
+            << std::setw(7) << "Parts" << std::setw(8) << "Shapes" << "   Description\n";
         out << std::string(96, '-') << "\n";
         for (const LibrarySymbol& symbol : library.symbols) {
             std::string description = symbol.description;
             if (description.size() > 44) description = description.substr(0, 41) + "...";
             out << std::left << std::setw(34) << ellipsize(symbol.name, 33) << std::right << std::setw(6)
-                << symbol.pins.size() << std::setw(7) << symbol.partCount << "   " << description
-                << "\n";
+                << symbol.pins.size() << std::setw(7) << symbol.partCount << std::setw(8)
+                << symbol.shapes.size() << "   " << description << "\n";
         }
     }
     if (!library.warnings.empty()) {
@@ -870,6 +1030,211 @@ std::string libraryToCsv(const Library& library) {
         }
     }
     return out.str();
+}
+
+Document symbolDocument(const LibrarySymbol& symbol, const std::string& fileName) {
+    Document document;
+    document.fileName = fileName + " · " + symbol.name;
+    document.type = DocType::SchLib;
+    document.container = Container::CompoundBinary;
+    document.formatVersion = "Symbol preview";
+
+    // Symbols are drawn with the board primitives: outlines/lines/pins on the top overlay
+    // (white) and filled bodies as pale-yellow fills, which is what Altium looks like.
+    constexpr int kOutlineLayer = 33;  // Top Overlay
+    constexpr int kFillLayer = 74;     // Multi-Layer (pale yellow in every renderer)
+
+    auto addLine = [&document](double x1, double y1, double x2, double y2, double width) {
+        TrackFeature track;
+        track.x1 = x1;
+        track.y1 = y1;
+        track.x2 = x2;
+        track.y2 = y2;
+        track.width = width;
+        track.layer = 33;
+        document.geometry.tracks.push_back(track);
+    };
+    // Body text sits on the pale-yellow fill, so it is drawn dark like Altium does.
+    auto addText = [&document](double x, double y, const std::string& text, double height) {
+        TextFeature label;
+        label.x = x;
+        label.y = y;
+        label.text = text;
+        label.height = height;
+        label.layer = 33;
+        label.color = 0x171b21;
+        document.geometry.texts.push_back(label);
+    };
+    auto addPinText = [&document](double x, double y, const std::string& text, double height) {
+        TextFeature label;
+        label.x = x;
+        label.y = y;
+        label.text = text;
+        label.height = height;
+        label.layer = 33;
+        label.color = 0xd8dde3;   // outside the body: light on the dark background
+        document.geometry.texts.push_back(label);
+    };
+
+    for (const SymbolShape& shape : symbol.shapes) {
+        const double stroke = shape.width > 0.0 ? shape.width : 8.0;
+        switch (shape.kind) {
+            case SymbolShape::Kind::Line:
+                if (shape.points.size() >= 2)
+                    addLine(shape.points[0].x, shape.points[0].y, shape.points[1].x,
+                            shape.points[1].y, stroke);
+                break;
+            case SymbolShape::Kind::Polyline:
+            case SymbolShape::Kind::RoundRectangle:
+            case SymbolShape::Kind::Rectangle: {
+                if (shape.kind != SymbolShape::Kind::Polyline && shape.points.size() >= 2) {
+                    const double x1 = std::min(shape.points[0].x, shape.points[1].x);
+                    const double x2 = std::max(shape.points[0].x, shape.points[1].x);
+                    const double y1 = std::min(shape.points[0].y, shape.points[1].y);
+                    const double y2 = std::max(shape.points[0].y, shape.points[1].y);
+                    if (shape.fill != 0) {
+                        FillFeature body;
+                        body.x1 = x1;
+                        body.y1 = y1;
+                        body.x2 = x2;
+                        body.y2 = y2;
+                        body.layer = kFillLayer;
+                        document.geometry.fills.push_back(body);
+                    }
+                    addLine(x1, y1, x2, y1, stroke);
+                    addLine(x2, y1, x2, y2, stroke);
+                    addLine(x2, y2, x1, y2, stroke);
+                    addLine(x1, y2, x1, y1, stroke);
+                    break;
+                }
+                for (std::size_t i = 0; i + 1 < shape.points.size(); ++i)
+                    addLine(shape.points[i].x, shape.points[i].y, shape.points[i + 1].x,
+                            shape.points[i + 1].y, stroke);
+                if (shape.fill == 2 && shape.points.size() >= 3) {
+                    RegionFeature region;
+                    region.outline = shape.points;
+                    region.layer = kFillLayer;
+                    document.geometry.regions.push_back(region);
+                }
+                break;
+            }
+            case SymbolShape::Kind::Arc: {
+                if (shape.points.empty() || shape.radius <= 0.0) break;
+                ArcFeature arc;
+                arc.cx = shape.points[0].x;
+                arc.cy = shape.points[0].y;
+                arc.radius = shape.radius;
+                arc.startAngle = shape.startAngle;
+                arc.endAngle = shape.endAngle;
+                arc.width = stroke;
+                arc.layer = kOutlineLayer;
+                document.geometry.arcs.push_back(arc);
+                break;
+            }
+            case SymbolShape::Kind::Ellipse: {
+                if (shape.points.empty() || shape.radius <= 0.0) break;
+                const int steps = 48;
+                RegionFeature ring;
+                ring.layer = kFillLayer;
+                for (int i = 0; i < steps; ++i) {
+                    const double angle = 2.0 * 3.14159265358979323846 * i / steps;
+                    Point point;
+                    point.x = shape.points[0].x + shape.radius * std::cos(angle);
+                    point.y = shape.points[0].y + shape.secondaryRadius * std::sin(angle);
+                    ring.outline.push_back(point);
+                }
+                if (shape.fill == 2) {
+                    document.geometry.regions.push_back(ring);
+                } else {
+                    for (std::size_t i = 0; i < ring.outline.size(); ++i) {
+                        const Point& a = ring.outline[i];
+                        const Point& b = ring.outline[(i + 1) % ring.outline.size()];
+                        addLine(a.x, a.y, b.x, b.y, stroke);
+                    }
+                }
+                break;
+            }
+            case SymbolShape::Kind::Text:
+                if (!shape.points.empty())
+                    addText(shape.points[0].x, shape.points[0].y,
+                            shape.text, shape.textHeight > 0.0 ? shape.textHeight : 60.0);
+                break;
+        }
+    }
+
+    // Pins: Altium stores the pin's body-side point in LOCATION and draws the pin outwards
+    // in the orientation direction, so the connection point is the far end.
+    const double pinText = 50.0;
+    for (const SymbolPin& pin : symbol.pinGeometry) {
+        if (pin.hidden) continue;
+        double dx = 1.0;
+        double dy = 0.0;
+        if (pin.rotation == 90) { dx = 0.0; dy = 1.0; }
+        else if (pin.rotation == 180) { dx = -1.0; dy = 0.0; }
+        else if (pin.rotation == 270) { dx = 0.0; dy = -1.0; }
+        const double endX = pin.x + dx * pin.length;
+        const double endY = pin.y + dy * pin.length;
+        addLine(pin.x, pin.y, endX, endY, 8.0);
+        // Small ring at the connection point (the end a wire attaches to).
+        {
+            ArcFeature dot;
+            dot.cx = endX;
+            dot.cy = endY;
+            dot.radius = 10.0;
+            dot.width = 8.0;
+            dot.layer = kOutlineLayer;
+            document.geometry.arcs.push_back(dot);
+        }
+        if (pin.showDesignator && !pin.designator.empty()) {
+            addPinText((pin.x + endX) / 2.0 + (dx == 0.0 ? 14.0 : -8.0),
+                       (pin.y + endY) / 2.0 + (dy == 0.0 ? 16.0 : 8.0), pin.designator, pinText);
+        }
+        if (pin.showName && !pin.name.empty()) {
+            // Pin names sit inside the symbol body, pin numbers above the pin.
+            const double width = static_cast<double>(pin.name.size()) * pinText * 0.62;
+            double nameX = pin.x;
+            double nameY = pin.y - pinText * 0.35;
+            if (dx > 0.0) nameX = pin.x - 24.0 - width;       // body is to the left
+            else if (dx < 0.0) nameX = pin.x + 24.0;          // body is to the right
+            else if (dy > 0.0) nameY = pin.y - 30.0 - pinText * 0.5;
+            else { nameY = pin.y + 30.0; }
+            addText(nameX, nameY, pin.name, pinText);
+        }
+    }
+
+    if (document.geometry.empty()) {
+        // Nothing to draw: still return an empty document so the caller can show a hint.
+        return document;
+    }
+
+    for (const TrackFeature& track : document.geometry.tracks) {
+        document.bounds.add(track.x1, track.y1);
+        document.bounds.add(track.x2, track.y2);
+    }
+    for (const ArcFeature& arc : document.geometry.arcs) {
+        document.bounds.add(arc.cx - arc.radius, arc.cy - arc.radius);
+        document.bounds.add(arc.cx + arc.radius, arc.cy + arc.radius);
+    }
+    for (const FillFeature& fill : document.geometry.fills) {
+        document.bounds.add(fill.x1, fill.y1);
+        document.bounds.add(fill.x2, fill.y2);
+    }
+    for (const RegionFeature& region : document.geometry.regions)
+        for (const Point& point : region.outline) document.bounds.add(point.x, point.y);
+    for (const TextFeature& label : document.geometry.texts)
+        document.bounds.add(label.x, label.y);
+
+    document.pcb.tracks = static_cast<int>(document.geometry.tracks.size());
+    document.pcb.arcs = static_cast<int>(document.geometry.arcs.size());
+
+    Component component;
+    component.name = symbol.name;
+    component.footprint = symbol.name;
+    component.description = symbol.description;
+    document.components.push_back(std::move(component));
+
+    finalizeBoard(document);
+    return document;
 }
 
 std::string librarySummary(const Library& library) {

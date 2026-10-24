@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(PcbAiViewer VERSION 0.11.0 LANGUAGES CXX)
+project(PcbAiViewer VERSION 0.12.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -43,6 +43,8 @@ add_library(pcbv_core STATIC
     src/core/Netlist.h
     src/core/Recent.cpp
     src/core/Recent.h
+    src/core/Search.cpp
+    src/core/Search.h
 )
 target_include_directories(pcbv_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 

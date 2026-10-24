@@ -17,6 +17,7 @@
 #include "core/Netlist.h"
 #include "core/Recent.h"
 #include "core/Library.h"
+#include "core/Search.h"
 #include "core/Export.h"
 
 namespace {
@@ -224,7 +225,91 @@ void selfTest() {
                 if (property.name == "Part Number" && property.value == "NE555P") hasPartNumber = true;
             check(hasPartNumber, "symbol parameters are kept");
         }
+        // Symbols are drawn: pins with geometry and the symbol's own graphics.
+        const std::string drawPath = "/tmp/pcbv-smoke-draw.SchLib";
+        const std::string drawText =
+            "|HEADER=Protel for Windows - Schematic Capture Ascii File Version 5.0|WEIGHT=3\r\n"
+            "|RECORD=1|LIBREFERENCE=OPAMP|COMPONENTDESCRIPTION=Op-amp\r\n"
+            "|RECORD=14|OWNERINDEX=0|LOCATION.X=-100|LOCATION.Y=-100|CORNER.X=100|CORNER.Y=100|"
+            "FILLED=T\r\n"
+            // PINCONGLOMERATE: bits 0-1 orientation (1 = left), 0x10 = show designator.
+            "|RECORD=2|OWNERINDEX=0|DESIGNATOR=1|NAME=+IN|ELECTRICAL=0|LOCATION.X=-200|LOCATION.Y=-50|"
+            "PINLENGTH=100|PINCONGLOMERATE=18\r\n"
+            "|RECORD=2|OWNERINDEX=0|DESIGNATOR=2|NAME=-IN|ELECTRICAL=0|LOCATION.X=-200|LOCATION.Y=50|"
+            "PINLENGTH=100|PINCONGLOMERATE=18\r\n"
+            "|RECORD=2|OWNERINDEX=0|DESIGNATOR=3|NAME=OUT|ELECTRICAL=2|LOCATION.X=200|LOCATION.Y=0|"
+            "PINLENGTH=100|PINCONGLOMERATE=16\r\n";
+        if (FILE* f = std::fopen(drawPath.c_str(), "wb")) {
+            std::fwrite(drawText.data(), 1, drawText.size(), f);
+            std::fclose(f);
+        }
+        const pcbv::ParseOutcome drawLib = pcbv::parseFile(drawPath);
+        check(drawLib.ok && drawLib.library.symbols.size() == 1, "drawing fixture parses");
+        if (drawLib.ok && !drawLib.library.symbols.empty()) {
+            const pcbv::LibrarySymbol& symbol = drawLib.library.symbols.front();
+            check(symbol.shapes.size() == 1, "symbol graphics are read");
+            check(symbol.pinGeometry.size() == 3, "pin geometry is read");
+            if (symbol.pinGeometry.size() == 3) {
+                check(symbol.pinGeometry[0].x < -1900.0 && symbol.pinGeometry[0].y > -600.0,
+                      "pin positions are converted from 10 mil units");
+                check(symbol.pinGeometry[0].length > 990.0 && symbol.pinGeometry[0].length < 1010.0,
+                      "pin length is converted");
+                check(symbol.pinGeometry[0].rotation == 180 && symbol.pinGeometry[2].rotation == 0 &&
+                          symbol.pinGeometry[2].showDesignator,
+                      "pin orientation and flags are decoded from PINCONGLOMERATE");
+            }
+            const pcbv::Document drawn = pcbv::symbolDocument(symbol, "OPAMP");
+            check(!drawn.geometry.tracks.empty(), "symbol drawing produces strokes");
+            check(!drawn.geometry.fills.empty(), "a filled symbol body becomes a filled rectangle");
+            check(drawn.bounds.valid && drawn.bounds.width() > 5000.0,
+                  "symbol drawing has real extents");
+            check(pcbv::toSvg(drawn).find("<svg") != std::string::npos,
+                  "a symbol can be exported as SVG");
+        }
+        std::remove(drawPath.c_str());
         std::remove(schLibPath.c_str());
+    }
+
+    // --- global search across documents --------------------------------------
+    {
+        const std::string path = "/tmp/pcbv-smoke-search.PcbDoc";
+        const std::string text =
+            "|RECORD=Board|KIND=Protel_Advanced_PCB|VERSION=5.00|VX0=0mil|VY0=0mil\r\n"
+            "|RECORD=Net|ID=0|NAME=VCC_3V3\r\n"
+            "|RECORD=Net|ID=1|NAME=GND\r\n"
+            "|RECORD=Component|ID=0|LAYER=TOP|X=100mil|Y=200mil|SOURCEDESIGNATOR=U7|COMMENT=STM32|"
+            "PATTERN=LQFP48|MANUFACTURER=ST\r\n"
+            "|RECORD=Pad|COMPONENT=0|NET=0|LAYER=TOP|NAME=1|X=90mil|Y=200mil|XSIZE=20mil|YSIZE=20mil\r\n"
+            "|RECORD=Track|NET=0|LAYER=TOP|X1=0mil|Y1=0mil|X2=100mil|Y2=0mil|WIDTH=10mil\r\n";
+        if (FILE* f = std::fopen(path.c_str(), "wb")) {
+            std::fwrite(text.data(), 1, text.size(), f);
+            std::fclose(f);
+        }
+        const pcbv::ParseOutcome doc = pcbv::parseFile(path);
+        check(doc.ok, "search fixture parses");
+        const pcbv::Library emptyLibrary;
+
+        const auto byDesignator = pcbv::searchDocument(doc.document, emptyLibrary, "u7");
+        check(byDesignator.size() == 1 && byDesignator.front().kind == pcbv::SearchHit::Kind::Component,
+              "search finds a component by designator (case insensitive)");
+        const auto byValue = pcbv::searchDocument(doc.document, emptyLibrary, "stm32");
+        check(!byValue.empty() && byValue.front().name == "U7", "search finds a component by value");
+        const auto byFootprint = pcbv::searchDocument(doc.document, emptyLibrary, "lqfp");
+        check(!byFootprint.empty(), "search finds a component by footprint");
+        const auto byNet = pcbv::searchDocument(doc.document, emptyLibrary, "gnd");
+        check(byNet.size() == 1 && byNet.front().kind == pcbv::SearchHit::Kind::Net,
+              "search finds a net");
+        check(pcbv::searchDocument(doc.document, emptyLibrary, "vcc").size() == 1,
+              "search finds a net by a partial name");
+        check(!pcbv::searchDocument(doc.document, emptyLibrary, "vcc_3").empty(),
+              "search also finds a net that carries no copper yet");
+        check(pcbv::searchDocument(doc.document, emptyLibrary, "nothing-here").empty(),
+              "search reports no hits for unknown text");
+        check(pcbv::searchDocument(doc.document, emptyLibrary, "  ").empty(),
+              "search ignores blank input");
+        check(pcbv::searchDocument(doc.document, emptyLibrary, "top").size() >= 1,
+              "search finds a layer");
+        std::remove(path.c_str());
     }
 
     // --- grouped BOM and revision comparison --------------------------------

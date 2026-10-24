@@ -7,6 +7,7 @@
 #include <QClipboard>
 #include <QColor>
 #include <QDateTime>
+#include <QDialog>
 #include <QDir>
 #include <QDockWidget>
 #include <QDragEnterEvent>
@@ -50,6 +51,7 @@
 #include <QTreeWidgetItem>
 #include <QTreeWidgetItemIterator>
 #include <QUrl>
+#include <memory>
 #include <QVariant>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -426,9 +428,16 @@ void MainWindow::createMenus() {
         filterEdit_->setFocus();
         filterEdit_->selectAll();
     });
+    globalFindAction_ = new QAction(tr("Find in all open &documents"), this);
+    globalFindAction_->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+F")));
+    globalFindAction_->setToolTip(
+        tr("Search components, nets, layers and library items in every open tab  (Ctrl+Shift+F)"));
+    connect(globalFindAction_, &QAction::triggered, this, &MainWindow::showSearchDialog);
     editMenu->addAction(findAction_);
+    editMenu->addAction(globalFindAction_);
     editMenu->addAction(copyAction_);
     addAction(findAction_);
+    addAction(globalFindAction_);
 
     // View: panel visibility, board fit, summary.
     QMenu* viewMenu = menuBar()->addMenu(tr("&View"));
@@ -454,6 +463,7 @@ void MainWindow::createMenus() {
                                  tr("<table cellpadding='3'>"
                                     "<tr><td><b>Ctrl+O</b></td><td>open a document</td></tr>"
                                     "<tr><td><b>Ctrl+F</b></td><td>jump to the filter field</td></tr>"
+                                    "<tr><td><b>Ctrl+Shift+F</b></td><td>find in every open document</td></tr>"
                                     "<tr><td><b>F5</b></td><td>document summary</td></tr>"
                                     "<tr><td><b>Ctrl+C</b></td><td>copy the component table</td></tr>"
                                     "<tr><td><b>Ctrl+Shift+C</b></td><td>export the BOM as CSV</td></tr>"
@@ -1380,6 +1390,170 @@ void MainWindow::setDocument(const pcbv::Document& document) {
 }
 
 // ---------------------------------------------------------------------------
+// Find in all open documents
+// ---------------------------------------------------------------------------
+
+void MainWindow::showSearchDialog() {
+    if (slots_.empty()) {
+        QMessageBox::information(this, tr("Find"), tr("Open a document first."));
+        return;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Find in all open documents"));
+    dialog.resize(860, 480);
+    QVBoxLayout* layout = new QVBoxLayout(&dialog);
+    layout->setContentsMargins(12, 12, 12, 12);
+    layout->setSpacing(8);
+
+    QHBoxLayout* inputRow = new QHBoxLayout();
+    QLineEdit* input = new QLineEdit(&dialog);
+    input->setPlaceholderText(tr("Designator, value, footprint, net, layer or library item…"));
+    input->setClearButtonEnabled(true);
+    QLabel* counter = new QLabel(&dialog);
+    counter->setStyleSheet("color:#8a929e;");
+    inputRow->addWidget(input, 1);
+    inputRow->addWidget(counter);
+    layout->addLayout(inputRow);
+
+    QTreeWidget* results = new QTreeWidget(&dialog);
+    results->setHeaderLabels({tr("Document"), tr("Kind"), tr("Name"), tr("Details")});
+    results->setRootIsDecorated(false);
+    results->setUniformRowHeights(true);
+    results->setAlternatingRowColors(true);
+    results->setSelectionMode(QAbstractItemView::SingleSelection);
+    results->setColumnWidth(0, 220);
+    results->setColumnWidth(1, 110);
+    results->setColumnWidth(2, 240);
+    results->header()->setStretchLastSection(true);
+    layout->addWidget(results, 1);
+
+    QHBoxLayout* buttonRow = new QHBoxLayout();
+    QLabel* hint = new QLabel(
+        tr("Double click (or press Enter) to open the tab and select the item."), &dialog);
+    hint->setStyleSheet("color:#8a929e;");
+    QPushButton* closeButton = new QPushButton(tr("Close"), &dialog);
+    QPushButton* openButton = new QPushButton(tr("Open"), &dialog);
+    openButton->setDefault(true);
+    buttonRow->addWidget(hint, 1);
+    buttonRow->addWidget(closeButton);
+    buttonRow->addWidget(openButton);
+    layout->addLayout(buttonRow);
+    connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::reject);
+
+    // Navigation target of every row: which tab, and what to select in it.
+    struct Target {
+        int slot = -1;
+        pcbv::SearchHit hit;
+        QString title;
+    };
+    auto targets = std::make_shared<std::vector<Target>>();
+
+    auto runSearch = [this, input, results, counter, targets]() {
+        const QString needle = input->text().trimmed();
+        targets->clear();
+        results->clear();
+        if (needle.isEmpty()) {
+            counter->setText(QString());
+            return;
+        }
+        int documentsWithHits = 0;
+        int total = 0;
+        for (std::size_t i = 0; i < slots_.size(); ++i) {
+            const DocumentSlot& slot = slots_[i];
+            const std::vector<pcbv::SearchHit> hits = pcbv::searchDocument(
+                slot.document, slot.library, needle.toStdString(), 300);
+            if (hits.empty()) continue;
+            ++documentsWithHits;
+            for (const pcbv::SearchHit& hit : hits) {
+                auto* item = new QTreeWidgetItem(results);
+                item->setText(0, slot.title);
+                item->setText(1, qs(pcbv::searchKindName(hit.kind)));
+                item->setText(2, qs(hit.name));
+                item->setText(3, qs(hit.detail));
+                item->setData(0, Qt::UserRole, static_cast<int>(targets->size()));
+                targets->push_back(Target{static_cast<int>(i), hit, slot.title});
+                ++total;
+            }
+        }
+        if (total == 0) {
+            counter->setText(tr("no matches in %1 open document(s)")
+                                 .arg(static_cast<int>(slots_.size())));
+        } else {
+            counter->setText(tr("%1 match(es) in %2 document(s)")
+                                 .arg(total)
+                                 .arg(documentsWithHits));
+        }
+        if (results->topLevelItemCount() > 0) results->setCurrentItem(results->topLevelItem(0));
+    };
+
+    auto activate = [this, &dialog, results, targets]() {
+        const QTreeWidgetItem* item = results->currentItem();
+        if (item == nullptr) return;
+        const int index = item->data(0, Qt::UserRole).toInt();
+        if (index < 0 || index >= static_cast<int>(targets->size())) return;
+        const Target& target = (*targets)[static_cast<std::size_t>(index)];
+
+        activateDocument(target.slot);
+        if (target.slot < 0 || target.slot >= static_cast<int>(slots_.size())) return;
+        const DocumentSlot& slot = slots_[static_cast<std::size_t>(target.slot)];
+
+        switch (target.hit.kind) {
+            case pcbv::SearchHit::Kind::Component:
+                if (!slot.library.footprints.empty()) {
+                    if (libraryPage_ != nullptr && tabs_ != nullptr)
+                        tabs_->setCurrentWidget(libraryPage_);
+                    selectLibraryItem(target.hit.index);
+                } else if (slot.library.symbols.empty()) {
+                    selectComponentByIndex(target.hit.index);
+                    if (table_ != nullptr && tabs_ != nullptr) tabs_->setCurrentWidget(table_->parentWidget());
+                }
+                break;
+            case pcbv::SearchHit::Kind::Footprint:
+            case pcbv::SearchHit::Kind::Symbol:
+                if (libraryPage_ != nullptr && tabs_ != nullptr) tabs_->setCurrentWidget(libraryPage_);
+                selectLibraryItem(target.hit.index);
+                break;
+            case pcbv::SearchHit::Kind::Net:
+                selectNet(qs(target.hit.name));
+                if (netlistPage_ != nullptr && tabs_ != nullptr) tabs_->setCurrentWidget(netlistPage_);
+                break;
+            case pcbv::SearchHit::Kind::Layer:
+                if (layersTree_ != nullptr) {
+                    for (int row = 0; row < layersTree_->topLevelItemCount(); ++row) {
+                        QTreeWidgetItem* layerItem = layersTree_->topLevelItem(row);
+                        if (layerItem->text(0) == qs(target.hit.name)) {
+                            layersTree_->setCurrentItem(layerItem);
+                            break;
+                        }
+                    }
+                }
+                if (boardView_ != nullptr && tabs_ != nullptr) tabs_->setCurrentWidget(boardView_);
+                break;
+        }
+        statusBar()->showMessage(tr("%1: %2 %3").arg(target.title,
+                                                    qs(pcbv::searchKindName(target.hit.kind)),
+                                                    qs(target.hit.name)),
+                                 5000);
+        dialog.accept();
+    };
+
+    connect(input, &QLineEdit::textChanged, &dialog, [runSearch]() { runSearch(); });
+    connect(input, &QLineEdit::returnPressed, &dialog, [activate]() { activate(); });
+    connect(results, &QTreeWidget::itemDoubleClicked, &dialog,
+            [activate](QTreeWidgetItem*, int) { activate(); });
+    connect(openButton, &QPushButton::clicked, &dialog, [activate]() { activate(); });
+
+    // Pre-fill with the current filter text: the user usually searches for what they see.
+    const QString seed = filterEdit_ != nullptr ? filterEdit_->text().trimmed() : QString();
+    if (!seed.isEmpty()) input->setText(seed);
+    input->setFocus();
+    input->selectAll();
+    runSearch();
+    dialog.exec();
+}
+
+// ---------------------------------------------------------------------------
 // Libraries (.PcbLib / .SchLib)
 // ---------------------------------------------------------------------------
 
@@ -1605,10 +1779,14 @@ void MainWindow::selectLibraryItem(int index) {
 
     if (detailsView_ != nullptr) detailsView_->setHtml(libraryItemDetailsHtml(index));
 
-    if (library.isFootprintLibrary() && boardView_ != nullptr) {
+    if (boardView_ != nullptr) {
+        const bool footprintLibrary = library.isFootprintLibrary();
         const pcbv::Document preview =
-            pcbv::footprintDocument(library.footprints[static_cast<std::size_t>(index)],
-                                    slot.title.toStdString());
+            footprintLibrary
+                ? pcbv::footprintDocument(library.footprints[static_cast<std::size_t>(index)],
+                                          slot.title.toStdString())
+                : pcbv::symbolDocument(library.symbols[static_cast<std::size_t>(index)],
+                                       slot.title.toStdString());
         boardView_->setDocument(preview);
         // The layers panel and the summary describe what is on screen.
         document_.geometry = preview.geometry;
@@ -1633,6 +1811,8 @@ void MainWindow::showLibraryDocument() {
     if (active_ < 0 || active_ >= static_cast<int>(slots_.size())) return;
     DocumentSlot& slot = slots_[static_cast<std::size_t>(active_)];
     const bool footprintLibrary = slot.library.isFootprintLibrary();
+    const bool hasDrawing = footprintLibrary || !slot.library.symbols.empty();
+    (void)hasDrawing;
 
     if (tabs_ != nullptr) {
         // Documents keep their own tabs; a library shows one list of items instead.
@@ -1647,7 +1827,7 @@ void MainWindow::showLibraryDocument() {
             tabs_->setCurrentWidget(libraryPage_);
         }
         const int boardTab = tabs_->indexOf(boardView_);
-        if (boardTab >= 0) tabs_->setTabVisible(boardTab, footprintLibrary);
+        if (boardTab >= 0) tabs_->setTabVisible(boardTab, true);
     }
 
     if (measureAction_ != nullptr && measureAction_->isChecked()) measureAction_->setChecked(false);
@@ -1655,14 +1835,7 @@ void MainWindow::showLibraryDocument() {
 
     populateLibrary();
     populateStructure();
-    if (footprintLibrary) {
-        selectLibraryItem(slot.libraryItem);
-    } else {
-        document_.geometry = pcbv::PcbGeometry();
-        if (boardView_ != nullptr) boardView_->clear();
-        populateLayers();
-        selectLibraryItem(slot.libraryItem);
-    }
+    selectLibraryItem(slot.libraryItem);
 
     log(tr("Opened %1  (%2)").arg(qs(document_.fileName), qs(pcbv::docTypeName(document_.type))));
     log(tr("Library: %1").arg(qs(pcbv::librarySummary(slot.library))));
@@ -1671,7 +1844,8 @@ void MainWindow::showLibraryDocument() {
         footprintLibrary
             ? tr("%1  ·  %2  ·  pick a footprint to see it on the Board tab")
                   .arg(qs(document_.fileName), qs(pcbv::librarySummary(slot.library)))
-            : tr("%1  ·  %2").arg(qs(document_.fileName), qs(pcbv::librarySummary(slot.library))),
+            : tr("%1  ·  %2  ·  pick a symbol to see its drawing on the Board tab")
+                  .arg(qs(document_.fileName), qs(pcbv::librarySummary(slot.library))),
         12000);
     updateActionStates();
 }
@@ -1975,8 +2149,7 @@ void MainWindow::updateActionStates() {
     const bool hasDocument = hasDocument_;
     const bool isLibrary = document_.type == pcbv::DocType::PcbLib ||
                            document_.type == pcbv::DocType::SchLib;
-    const bool hasBoard = hasDocument && boardView_ != nullptr && boardView_->hasGeometry() &&
-                          (!isLibrary || document_.type == pcbv::DocType::PcbLib);
+    const bool hasBoard = hasDocument && boardView_ != nullptr && boardView_->hasGeometry();
 
     if (isLibrary) {
         // A library has no nets, no BOM and nothing to compare; it only shows items.
@@ -1994,6 +2167,7 @@ void MainWindow::updateActionStates() {
         for (QAction* action : {closeAction_, closeAllAction_}) {
             if (action != nullptr) action->setEnabled(hasDocument);
         }
+        if (globalFindAction_ != nullptr) globalFindAction_->setEnabled(hasDocument);
         const bool many = slots_.size() > 1;
         if (nextDocumentAction_ != nullptr) nextDocumentAction_->setEnabled(many);
         if (previousDocumentAction_ != nullptr) previousDocumentAction_->setEnabled(many);
@@ -2012,6 +2186,8 @@ void MainWindow::updateActionStates() {
         if (action != nullptr) action->setEnabled(hasBoard);
     }
     if (layersDock_ != nullptr) layersDock_->setEnabled(hasBoard);
+
+    if (globalFindAction_ != nullptr) globalFindAction_->setEnabled(hasDocument);
 
     const bool many = slots_.size() > 1;
     if (nextDocumentAction_ != nullptr) nextDocumentAction_->setEnabled(many);

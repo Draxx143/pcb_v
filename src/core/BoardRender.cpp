@@ -300,7 +300,7 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
             if (options.isHidden(label.layer)) continue;
             RenderPrimitive text;
             text.kind = RenderPrimitive::Kind::Text;
-            text.color = layerColor(label.layer);
+            text.color = label.color != 0 ? label.color : layerColor(label.layer);
             text.layer = label.layer;
             text.text = label.text;
             text.fontSize = label.height * view.unit;

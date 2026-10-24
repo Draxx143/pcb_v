@@ -422,6 +422,87 @@ void parseBinaryPcb(CompoundFile& cf, Document& doc) {
 // SchDoc (binary / OLE2)
 // ---------------------------------------------------------------------------
 
+/// Reads a "Pascal short string" (1-byte length + text) out of a binary pin record.
+std::string readPascalShortString(const std::vector<std::uint8_t>& data, std::size_t& pos) {
+    if (pos >= data.size()) return {};
+    const std::size_t length = data[pos];
+    ++pos;
+    const std::size_t available = std::min<std::size_t>(length, data.size() - pos);
+    const std::string value = text::fromCp1252(data.data() + pos, available);
+    pos += available;
+    return value;
+}
+
+/// Decodes a binary schematic pin record (record type 2, flag byte 0x01).
+///
+/// Binary pins are the only schematic record Altium writes as raw fields instead of a
+/// "|KEY=VALUE|" text block, which is why binary SchDocs/SchLibs used to show pins
+/// without names. The layout below was verified against real libraries:
+///
+///   u8  unknown, i16 ownerPart, u8 displayMode, u8 innerEdge, u8 outerEdge,
+///   u8 inside, u8 outside, s description, u8 formalType, u8 electrical,
+///   u8 conglomerate, i16 length, i16 x, i16 y, i32 color,
+///   s name, s designator, s swapIdGroup, s partAndSequence, s defaultValue
+///
+/// (`s` = Pascal short string.) Coordinates and length are in 10 mil units, like the
+/// ASCII records, and PINCONGLOMERATE holds orientation (bits 0-1), the hidden flag
+/// (0x04), name display (0x08), designator display (0x10) and "not accessible" (0x20).
+void decodeBinaryPin(const std::vector<std::uint8_t>& payload, std::vector<Property>& props) {
+    // payload starts right after the int32 record type.
+    std::size_t pos = 0;
+    auto byte = [&payload, &pos]() {
+        return pos < payload.size() ? payload[pos++] : 0;
+    };
+    auto i16 = [&payload, &pos]() -> int {
+        if (pos + 2 > payload.size()) {
+            pos = payload.size();
+            return 0;
+        }
+        const int value = static_cast<std::int16_t>(rdU16(payload, pos));
+        pos += 2;
+        return value;
+    };
+
+    byte();                       // unknown
+    const int ownerPart = i16();
+    const int displayMode = byte();
+    const int innerEdge = byte();
+    const int outerEdge = byte();
+    const int inside = byte();
+    const int outside = byte();
+    const std::string description = readPascalShortString(payload, pos);
+    const int formalType = byte();
+    const int electrical = byte();
+    const int conglomerate = byte();
+    const int length = i16();
+    const int x = i16();
+    const int y = i16();
+    if (pos + 4 <= payload.size()) pos += 4;  // colour
+    const std::string name = readPascalShortString(payload, pos);
+    const std::string designator = readPascalShortString(payload, pos);
+
+    auto add = [&props](const std::string& key, const std::string& value) {
+        props.push_back(Property{key, value});
+    };
+    add("RECORD", "2");
+    add("OWNERPARTID", std::to_string(ownerPart));
+    add("OWNERPARTDISPLAYMODE", std::to_string(displayMode));
+    add("SYMBOL_INNEREDGE", std::to_string(innerEdge));
+    add("SYMBOL_OUTEREDGE", std::to_string(outerEdge));
+    add("SYMBOL_INSIDE", std::to_string(inside));
+    add("SYMBOL_OUTSIDE", std::to_string(outside));
+    if (!description.empty()) add("DESCRIPTION", description);
+    add("FORMALTYPE", std::to_string(formalType));
+    add("ELECTRICAL", std::to_string(electrical));
+    add("PINCONGLOMERATE", std::to_string(conglomerate));
+    add("PINLENGTH", std::to_string(length));
+    add("LOCATION.X", std::to_string(x));
+    add("LOCATION.Y", std::to_string(y));
+    add("NAME", name);
+    add("DESIGNATOR", designator);
+    if ((conglomerate & 0x04) != 0) add("HIDDEN", "T");
+}
+
 std::vector<detail::SchRecord> readBinarySchRecords(const std::vector<std::uint8_t>& header) {
     std::vector<detail::SchRecord> records;
     std::size_t pos = 0;
@@ -437,6 +518,12 @@ std::vector<detail::SchRecord> readBinarySchRecords(const std::vector<std::uint8
         record.binary = (flags == 0x01);
         if (record.binary) {
             record.type = (size >= 4) ? rdI32(header, pos) : -1;
+            if (record.type == 2 && size >= 4) {
+                const std::vector<std::uint8_t> payload(
+                    header.begin() + static_cast<std::ptrdiff_t>(pos + 4),
+                    header.begin() + static_cast<std::ptrdiff_t>(pos + size));
+                decodeBinaryPin(payload, record.props);
+            }
         } else {
             record.props = text::parseParameters(header.data() + pos, size);
             text::applyUnicodeOverrides(record.props);

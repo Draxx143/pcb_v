@@ -11,6 +11,7 @@
 #include "core/Compare.h"
 #include "core/Library.h"
 #include "core/Model.h"
+#include "core/Search.h"
 
 class QAction;
 class QDragEnterEvent;
@@ -116,6 +117,7 @@ private:
     void restoreViewState();
     void clearDocument();
     void updateDocumentTitle();
+    void showSearchDialog();
     void showLibraryDocument();
     void populateLibrary();
     void selectLibraryItem(int index);
@@ -186,6 +188,7 @@ private:
     QAction* bomHtmlAction_ = nullptr;
     QAction* compareAction_ = nullptr;
     QAction* findAction_ = nullptr;
+    QAction* globalFindAction_ = nullptr;
     QAction* exportAction_ = nullptr;
     QAction* zoomInAction_ = nullptr;
     QAction* zoomOutAction_ = nullptr;

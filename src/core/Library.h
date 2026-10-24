@@ -34,14 +34,51 @@ struct LibraryFootprint {
     int bodyCount = 0;
 };
 
+/// One drawing primitive of a schematic symbol (Altium RECORD 6/8/10/12/13/14/28).
+struct SymbolShape {
+    enum class Kind { Line, Polyline, Rectangle, RoundRectangle, Arc, Ellipse, Text };
+
+    Kind kind = Kind::Line;
+    std::vector<Point> points;     // mil: line/polyline vertices, rectangle corners
+    double radius = 0.0;           // arc / ellipse, mil
+    double secondaryRadius = 0.0;  // ellipse second radius, mil
+    double startAngle = 0.0;       // arc, degrees
+    double endAngle = 360.0;
+    double width = 0.0;            // stroke width, mil (0 = hairline)
+    double rotation = 0.0;         // text / round rectangle, degrees
+    int fill = 0;                  // 0 = none, 1 = outline, 2 = filled (Altium FILLED)
+    std::string text;              // text shapes
+    double textHeight = 0.0;       // mil
+    int color = 0;                 // 0 = default (layer colour)
+};
+
+/// A pin with its drawing geometry (schematic symbols).
+struct SymbolPin {
+    std::string designator;  // "1", "A3", …
+    std::string name;        // "GND", …
+    std::string electrical;  // "Power", "Input", …
+    double x = 0.0;          // connection point, mil
+    double y = 0.0;
+    double length = 0.0;     // mil
+    int rotation = 0;        // 0 = right, 90 = up, 180 = left, 270 = down
+    int ownerPart = 1;
+    bool hidden = false;
+    bool showName = true;
+    bool showDesignator = true;
+};
+
 /// One symbol of a schematic library.
 struct LibrarySymbol {
     std::string name;              // lib reference
     std::string description;
     std::string designatorPrefix;  // default designator, e.g. "U?"
     int partCount = 1;             // sub-parts (multi-part symbols)
-    std::vector<Pin> pins;
+    std::vector<Pin> pins;               // name/designator/electrical (list view)
+    std::vector<SymbolPin> pinGeometry;  // the same pins with coordinates (drawing)
+    std::vector<SymbolShape> shapes;     // the symbol's graphics
     std::vector<Property> parameters;
+
+    bool hasDrawing() const { return !shapes.empty() || !pinGeometry.empty(); }
 };
 
 /// A whole library file, whichever of the two kinds it is.
@@ -72,6 +109,11 @@ void buildLibraryDocument(Document& document, Library& library);
 
 /// A stand-alone document holding exactly one footprint, for the board view.
 Document footprintDocument(const LibraryFootprint& footprint, const std::string& fileName);
+
+/// The same for one schematic symbol: its graphics are mapped onto the board drawing
+/// model (lines/polylines -> tracks, rectangles/ellipses -> regions, text -> labels),
+/// so the board view, the SVG export and printing work without a second renderer.
+Document symbolDocument(const LibrarySymbol& symbol, const std::string& fileName);
 
 /// One-line summary, e.g. "PcbLib · 12 footprints · 0 symbols".
 std::string librarySummary(const Library& library);

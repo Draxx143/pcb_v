@@ -25,6 +25,10 @@ std::vector<SchRecord> readBinarySchRecords(const std::vector<std::uint8_t>& str
 /// Reads a schematic record stream (SchDoc FileHeader or one .SchLib symbol) into records.
 std::vector<SchRecord> readSchRecordStream(const std::vector<std::uint8_t>& stream);
 
+/// Splits an ASCII schematic export into records, with the same OWNERINDEX numbering a
+/// binary file uses (the first "|HEADER=" line is not an object).
+std::vector<SchRecord> readAsciiSchRecords(const std::vector<std::uint8_t>& bytes);
+
 /// Populates components/pins/statistics of `document` from schematic records.
 void buildSchDocument(const std::vector<SchRecord>& records, Document& document);
 
