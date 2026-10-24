@@ -144,6 +144,7 @@ struct Property {
 /// A real 3D model of a part: the STEP file Altium embeds in the footprint library.
 struct EmbeddedModel {
     std::string name;       ///< file name inside the library ("QFN-24.step")
+    std::string sourcePath; ///< path the library gives ("${KICAD7_3DMODEL_DIR}/…/X.step")
     std::string id;         ///< the library's model id ("{GUID}")
     std::string stepText;   ///< decoded ISO-10303-21 text ("" when it is another format)
     double rotationX = 0.0; ///< degrees, from the library's model record

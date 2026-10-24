@@ -169,6 +169,14 @@ bash setup_linux.sh --desktop
 ./build/pcbv-cli --netlist "/path/to/board.PcbDoc"
 ./build/pcbv-cli --netlist-csv netlist.csv "/path/to/board.PcbDoc"
 
+# کتابخانه‌های KiCad (فوت‌پرینت و نماد) مستقیم باز می‌شوند
+./build/pcbv-cli --lib tests/fixtures/kicad/TO-252-2.kicad_mod
+./build/pcbv-cli --lib /usr/share/kicad/symbols/Device.kicad_sym
+
+# پایگاه‌دادهٔ قطعات: MPN → نماد/فوت‌پرینت/مدل سه‌بعدی/دیتاشیت (+ بررسی وجود فایل‌ها)
+./build/pcbv-cli --index libraries/index.json
+./build/pcbv-cli --search "0603 10k" libraries/index.json
+
 # مقایسهٔ دو نسخهٔ یک برد/شماتیک
 ./build/pcbv-cli --compare old.PcbDoc new.PcbDoc
 ./build/pcbv-cli --compare-html diff.html old.PcbDoc new.PcbDoc
@@ -261,6 +269,83 @@ ls -lh ~/project_pcb_problem_finder/library
 منابع در `library/README.md` است. بازتولید کتابخانه: `python3 tools/build_library.py`
 (نیاز به اینترنت و `gh`)، و ساخت فایل zip: `python3 tools/pack_library.py`.
 
+## ۴-۲) ساختار استاندارد `libraries/` + KiCad + پایگاه‌دادهٔ قطعات
+
+از این نسخه، همهٔ قطعات در یک ساختار ثابت کنار پروژه می‌نشینند و برنامه هر دو خانوادهٔ فایل
+را خودش می‌خواند (آلتیوم و KiCad):
+
+```
+libraries/
+  index.json      پایگاه‌دادهٔ قطعات: MPN → نماد، فوت‌پرینت، مدل سه‌بعدی، دیتاشیت
+  symbols/        فایل‌های .kicad_sym  (هر فایل می‌تواند چند نماد داشته باشد)
+  footprints/     فایل‌های .kicad_mod  (یک فوت‌پرینت در هر فایل؛ .PcbLib هم می‌شود)
+  models3d/       فایل‌های .step      (بدنهٔ واقعی قطعه)
+  datasheets/     فایل‌های PDF (اختیاری، نسخهٔ محلی)
+```
+
+**اتصال خودکار**: برنامه `libraries/footprints/` را در سه جا می‌گردد: پوشهٔ برد، پوشهٔ جاری و
+کنار فایل اجرایی (`~/project_pcb_problem_finder/libraries/footprints`). پس کافی است این پوشه را
+کنار برد بگذارید تا بدنه‌های واقعی روی برد بیایند. مدل سه‌بعدی هم از همان‌جا پیدا می‌شود:
+مسیر `${KICAD7_3DMODEL_DIR}/…` که داخل فایل KiCad نوشته شده، اول با متغیرهای محیطی باز
+می‌شود و اگر نبود در `models3d/` کنار همان فایل جست‌وجو می‌شود.
+
+**خواندن کتابخانهٔ KiCad** (فایل متنی S-expression؛ بدون هیچ کتابخانهٔ جانبی):
+
+```bash
+./build/pcbv-cli --lib tests/fixtures/kicad/TO-252-2.kicad_mod     # پدها، سیلک، مدل، دیتاشیت
+./build/pcbv-cli --lib /usr/share/kicad/symbols/Device.kicad_sym   # نمادها، پین‌ها، بدنه
+```
+
+از هر فوت‌پرینت KiCad این‌ها خوانده می‌شود: نام، توضیح، دیتاشیت، مختصات و ابعاد و سوراخ هر پد
+(میلی‌متر → mil با برگرداندن محور Y)، خط/دایره/کمان/چندضلعی سیلک و courtyard، و رکورد
+`(model …)` با offset/rotate. از هر نماد: نام، پین‌ها (شماره، نام، نوع الکتریکی)، مستطیل/خط/
+دایره/کمان بدنه و ویژگی‌های `Reference`/`Value`/`Footprint`/`Datasheet`/`ki_description`.
+
+**وارد کردن از نصب KiCad** (بدون کپی کردن چند گیگابایت؛ فقط چیزی که لازم دارید):
+
+```bash
+# ببینید چه چیزی وارد می‌شود، بدون تغییر دادن چیزی
+python3 tools/import_kicad.py \
+  --footprints /usr/share/kicad/footprints/Package_TO_SOT_SMD.pretty \
+  --models3d   /usr/share/kicad/3dmodels --dry-run
+
+# فقط چند قطعه را وارد کنید و فایل‌ها را داخل پروژه کپی کنید
+python3 tools/import_kicad.py \
+  --footprints /usr/share/kicad/footprints/Package_TO_SOT_SMD.pretty \
+  --symbols    /usr/share/kicad/symbols/Device.kicad_sym \
+  --models3d   /usr/share/kicad/3dmodels \
+  --only TO-252-2,SOT-23 --copy \
+  --index libraries/index.json
+```
+
+**پایگاه‌دادهٔ قطعات** یک فایل JSON خوانا است (`libraries/index.json`، نسخهٔ ۱):
+
+```json
+{ "format": "pcbv-part-index", "version": 1,
+  "parts": [
+    { "id": "R-0603-10k", "mpn": "RC0603FR-0710KL", "manufacturer": "Yageo",
+      "value": "10k", "package": "0603",
+      "symbol": "symbols/Device_R.kicad_sym",
+      "footprint": "footprints/R_0603_1608Metric.kicad_mod",
+      "model": "models3d/R_0603_1608Metric.step",
+      "datasheet": "datasheets/RC0603.pdf",
+      "tags": ["resistor", "smd"] } ] }
+```
+
+```bash
+./build/pcbv-cli --index libraries/index.json          # فهرست + بررسی وجود همهٔ فایل‌ها
+./build/pcbv-cli --search "0603 10k" libraries/index.json
+./build/pcbv-cli --search "yageo resistor" libraries/index.json
+```
+
+جست‌وجو «همهٔ کلمه‌ها باید تطابق داشته باشند» است و امتیازدهی اولویت‌دار دارد: MPN دقیق >
+شناسه > پکیج > مقدار > برچسب > زیررشته. خروجی هر ردیف مسیر فایل‌های همان قطعه را هم نشان
+می‌دهد. فرمت کامل و توضیح فیلدها: `libraries/README.md`.
+
+> اگر تعداد قطعات از چند هزار گذشت و JSON کند شد، همان مدل داده روی SQLite هم قابل نشستن
+> است (`PartIndex` تنها جایی است که خواندن/نوشتن انجام می‌شود)، ولی برای چند هزار قطعه JSON
+> کافی و با دست قابل ویرایش است.
+
 ---
 
 ## ۵) تست کردن با فایل نمونه
@@ -316,11 +401,14 @@ project_pcb_problem_finder/      (همان مخزن pcb_v)
 │       ├── MainWindow.*    تب قطعات، پنل‌ها، منوها، تم تیره
 │       └── BoardView.*     ویجت رسم برد (زوم/پن/انتخاب قطعه)
 ├── tests/
-│   ├── smoke.cpp           تست سلامت پارسر
+│   ├── smoke.cpp           تست سلامت پارسر + تست KiCad/پایگاه‌دادهٔ قطعات
+│   ├── fixtures/kicad/     نمونهٔ .kicad_mod و .kicad_sym برای تست
 │   └── fetch_samples.sh    دانلود فایل نمونه
 ├── library/                کتابخانهٔ آماده (`.pcbvlib`) + مجوز/منابع آن
+├── libraries/              ساختار استاندارد قطعات: index.json + symbols/footprints/models3d/datasheets
 ├── tools/
 │   ├── build_library.py    ساخت دوبارهٔ کتابخانه از kicad-footprints/packages3D
+│   ├── import_kicad.py     وارد کردن قطعات از نصب KiCad به libraries/index.json
 │   ├── pack_library.py     ساخت zip کتابخانه برای دانلود
 │   └── rename_project_folder.sh  تغییر نام پوشهٔ پروژه به نام جدید
 ├── samples/                فایل‌های تست شما (در گیت نادیده گرفته می‌شود)
@@ -333,6 +421,12 @@ project_pcb_problem_finder/      (همان مخزن pcb_v)
 
 - **کانتینر**: خواندن هدر CFB، FAT، DIFAT، MiniFAT، MiniStream و پیمایش درخت دایرکتوری
   (رد-بلک) با محافظت در برابر حلقه و داده‌های خراب.
+- **KiCad**: فایل‌های `.kicad_mod` و `.kicad_sym` با یک پارسر S-expression دست‌نویس خوانده
+  می‌شوند (`SExpr.cpp`: رشتهٔ نقل‌قولی، `|atom|`، کامنت `;`، BOM، اعداد). نتیجه به همان
+  `LibraryFootprint`/`LibrarySymbol` آلتیوم نگاشت می‌شود، پس جدول‌ها، SVG، نقشهٔ برد و رندر
+  سه‌بعدی بدون هیچ تغییری کار می‌کنند. واحد KiCad میلی‌متر است و به mil تبدیل می‌شود؛ محور Y
+  فوت‌پرینت (رو به پایین) برگردانده می‌شود. مدل `${KICAD*_3DMODEL_DIR}/…` از متغیر محیطی و
+  بعد از `models3d/` کنار برد/کتابخانه حل می‌شود و با همان `Step.cpp` رندر می‌شود.
 - **SchDoc**: استریم `FileHeader` شامل رکوردهای `[uint32 size|flags][payload]`.
   `flags==1` یعنی رکورد باینری (پین باینری). قطعات `RECORD=1` و فرزندانشان با
   `OWNERINDEX` به هم وصل می‌شوند (ایندکس شیء = ایندکس رکورد منهای رکورد هدر).
@@ -377,15 +471,19 @@ project_pcb_problem_finder/      (همان مخزن pcb_v)
 - پرشدگی Copper Pour محاسبه نمی‌شود (کانتور با خط‌چین).
 - در خروجی ASCII، متن سیلک‌اسکرین معمولاً ذخیره نمی‌شود و کانتور برد فقط وقتی رسم می‌شود
   که رکورد `Board` مختصات `VXn/VYn` داشته باشد؛ در غیر این صورت کادر خط‌چین دور برد رسم می‌شود.
+- از KiCad، فقط `.kicad_mod`/`.kicad_sym` خوانده می‌شوند؛ `.kicad_pcb` و `.kicad_sch`
+  (سند کامل) فعلاً باز نمی‌شوند. مدل `.wrl` هنوز رندر نمی‌شود؛ برای ۳D از `.step` همان قطعه
+  استفاده کنید (`kicad-packages3D` هر دو را دارد).
 - فایل‌های رمزنگاری‌شده یا بسیار قدیمی (فرمت Protel 99 و قبل‌تر) ممکن است کامل خوانده نشوند؛
   در این حالت هشدار در پنجرهٔ `Parser log` نشان داده می‌شود.
 
 ## ۹) مرحلهٔ بعد (پیشنهاد)
 
-1. رسم نقشهٔ PCB (پدها، ترک‌ها، ویاها، سیلک‌اسکرین) با بزرگ‌نمایی و انتخاب قطعه از روی نقشه.
-2. نتیجه‌گیری نت‌لیست از شماتیک + تطبیق نت‌ها بین شماتیک و برد.
-3. ادغام چند شیت/پروژه در یک BOM واحد + گروه‌بندی قطعات یکسان و تعداد.
-4. جست‌وجوی پیشرفته، Bookmark، و دستیار هوشمند برای تحلیل مدار (بخش AI اسکلت اولیه).
+1. ✅ کتابخانهٔ آمادهٔ قطعات + ساختار استاندارد `libraries/` + پایگاه‌دادهٔ JSON.
+2. ✅ پارسر C++ برای `.kicad_mod`/`.kicad_sym` (پد، ابعاد، سوراخ، نام پین، لینک مدل).
+3. رندر دوبعدی با کنترل لایه به سبک آلتیوم (فقط لایهٔ فعال / تک‌رنگ / شفافیت لایه‌ها).
+4. بارگذاری مدل STEP/WRL داخل برنامه — STEP انجام شد، WRL در نوبت است.
+5. نتیجه‌گیری نت‌لیست از شماتیک + تطبیق نت‌ها بین شماتیک و برد، ادغام چند شیت در یک BOM.
 
 ---
 

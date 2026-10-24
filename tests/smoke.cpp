@@ -8,6 +8,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -19,7 +22,9 @@
 #include "core/Compare.h"
 #include "core/Netlist.h"
 #include "core/Recent.h"
+#include "core/KiCadLibrary.h"
 #include "core/Library.h"
+#include "core/PartIndex.h"
 #include "core/Search.h"
 #include "core/ThreeD.h"
 #include "core/Export.h"
@@ -1179,6 +1184,115 @@ void verifyDocument(const std::string& path) {
     }
 }
 
+/// Folder of the KiCad fixtures, looked up next to the build tree.
+std::string fixtureFolder() {
+    const char* candidates[] = {"tests/fixtures/kicad", "../tests/fixtures/kicad",
+                                "../../tests/fixtures/kicad", "../../../tests/fixtures/kicad"};
+    for (const char* candidate : candidates) {
+        if (std::filesystem::is_directory(candidate)) return candidate;
+    }
+    return {};
+}
+
+std::string readWholeFile(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
+}
+
+/// The KiCad reader and the part index: the open formats the project relies on.
+void kicadSelfTest() {
+    std::printf("KiCad formats and the part index\n");
+    const std::string folder = fixtureFolder();
+    if (folder.empty()) {
+        std::printf("  [skip] tests/fixtures/kicad not found next to the build tree\n");
+        return;
+    }
+
+    // --- one footprint ------------------------------------------------------
+    const std::string footprintText = readWholeFile(folder + "/TO-252-2.kicad_mod");
+    check(!footprintText.empty(), "the KiCad footprint fixture was read");
+    pcbv::LibraryFootprint footprint;
+    std::string error;
+    check(pcbv::readKiCadFootprint(footprintText, footprint, error),
+          "the .kicad_mod file parses (" + error + ")");
+    check(footprint.name == "TO-252-2", "the footprint name comes from the file");
+    check(footprint.geometry.pads.size() == 3, "all three pads were read");
+    if (footprint.geometry.pads.size() == 3) {
+        const pcbv::Pad& pad1 = footprint.geometry.pads[0];
+        // 2.28 mm = 89.76 mil, and the footprint's Y points down while the model's points up.
+        check(pad1.designator == "1", "the pad designator is kept");
+        check(std::fabs(pad1.x + 89.76) < 0.05 && std::fabs(pad1.y - 89.76) < 0.05,
+              "the pad centre is converted from mm with Y flipped");
+        check(pad1.width > 39.0 && pad1.width < 41.0, "the pad size is converted from mm");
+        check(pad1.holeSize == 0.0, "an smd pad has no drill");
+    }
+    check(footprint.geometry.arcs.size() == 1, "the silkscreen arc was read as an arc");
+    check(footprint.description.find("DPAK") != std::string::npos,
+          "the description is taken from (descr …)");
+    check(!footprint.models.empty() && footprint.models.front().name == "TO-252-2.step",
+          "the 3D model reference is kept");
+    check(footprint.bounds.valid && footprint.bounds.width() > 0.0,
+          "the footprint has a bounding box");
+
+    // --- a symbol library ---------------------------------------------------
+    const std::string symbolText = readWholeFile(folder + "/Device_RC.kicad_sym");
+    std::vector<pcbv::LibrarySymbol> symbols;
+    error.clear();
+    check(pcbv::readKiCadSymbols(symbolText, symbols, error),
+          "the .kicad_sym file parses (" + error + ")");
+    check(symbols.size() == 2, "both symbols were read");
+    if (symbols.size() == 2) {
+        const pcbv::LibrarySymbol& resistor = symbols[0];
+        check(resistor.name == "R", "the symbol name comes from the file");
+        check(resistor.pins.size() == 2, "the resistor has two pins");
+        if (resistor.pins.size() == 2) {
+            check(resistor.pins[0].designator == "1" && resistor.pins[1].designator == "2",
+                  "the pin numbers are kept");
+        }
+        check(!resistor.shapes.empty(), "the symbol body is drawn");
+        check(resistor.description == "Resistor", "the description is read from ki_description");
+    }
+
+    // --- the whole library path --------------------------------------------
+    pcbv::Library library;
+    error.clear();
+    check(pcbv::readKiCadLibrary(footprintText, "TO-252-2.kicad_mod", library, error),
+          "a .kicad_mod becomes a one-footprint library (" + error + ")");
+    check(library.type == pcbv::DocType::PcbLib && library.footprints.size() == 1,
+          "the library has the right type and item count");
+
+    // --- the part index -----------------------------------------------------
+    pcbv::PartIndex index;
+    std::string indexError;
+    const std::filesystem::path indexPath =
+        std::filesystem::temp_directory_path() / "pcbv-smoke-index.json";
+    {
+        std::ofstream out(indexPath, std::ios::binary);
+        out << R"({"format":"pcbv-part-index","version":1,"parts":[
+          {"id":"R-0603-10k","mpn":"RC0603FR-0710KL","manufacturer":"Yageo",
+           "value":"10k","package":"0603","description":"thick film resistor",
+           "tags":["resistor","smd"]},
+          {"id":"C-0603-100n","mpn":"C0603C104K5RACTU","manufacturer":"KEMET",
+           "value":"100nF","package":"0603","tags":["capacitor","smd"]}]})";
+    }
+    check(index.load(indexPath.string(), indexError),
+          "the part index loads (" + indexError + ")");
+    check(index.parts.size() == 2, "both parts of the index were read");
+    const std::vector<pcbv::PartMatch> byValue = pcbv::searchParts(index, "0603 10k");
+    check(byValue.size() == 1 && byValue.front().part->mpn == "RC0603FR-0710KL",
+          "a two-word search returns the single part that matches both words");
+    const std::vector<pcbv::PartMatch> byMpn = pcbv::searchParts(index, "RC0603FR");
+    check(!byMpn.empty() && byMpn.front().part->id == "R-0603-10k",
+          "a partial part number finds the part");
+    check(pcbv::searchParts(index, "0603 mosfet").empty(),
+          "a word no part matches excludes the part");
+    const pcbv::PartIndexCheck check1 = pcbv::checkPartIndex(index);
+    check(check1.parts == 2 && check1.ok(), "an index row without files is not an error");
+    std::filesystem::remove(indexPath);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1188,6 +1302,8 @@ int main(int argc, char** argv) {
     }
     if (std::strcmp(argv[1], "--self-test") == 0) {
         selfTest();
+        std::printf("\n");
+        kicadSelfTest();
         std::printf("\n%s (%d failure%s)\n", g_failures == 0 ? "PASSED" : "FAILED", g_failures,
                     g_failures == 1 ? "" : "s");
         return g_failures == 0 ? 0 : 1;

@@ -92,11 +92,11 @@ struct Face {
 struct Scene {
     std::vector<Face> faces;
 
-    void addPolygon(const std::vector<Vec3>& points, std::uint32_t color, double metal = 0.0,
+    void addPolygon(std::vector<Vec3> points, std::uint32_t color, double metal = 0.0,
                     double alpha = 1.0) {
         if (points.size() < 3) return;
         Face face;
-        face.points = points;
+        face.points = std::move(points);
         face.color = color;
         face.metal = metal;
         face.alpha = alpha;

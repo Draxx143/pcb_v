@@ -25,6 +25,7 @@
 #include "core/Netlist.h"
 #include "core/Export.h"
 #include "core/Library.h"
+#include "core/PartIndex.h"
 #include "core/ThreeD.h"
 
 namespace {
@@ -53,6 +54,9 @@ void printUsage() {
         "  pcbv-cli --inspect <file>                show how the file was detected/decoded\n"
         "  pcbv-cli --lib   <file.PcbLib|.SchLib>   footprints / symbols of a library\n"
         "  pcbv-cli --lib-csv <out.csv> <file>      the same listing as CSV\n"
+        "  pcbv-cli --index <libraries/index.json>   the part database (MPN -> symbol/footprint/\n"
+        "                                            model/datasheet) and a check of every file\n"
+        "  pcbv-cli --search \"0603 10k\" <index.json>  find parts by number, package, value, tag\n"
         "\n"
         "Options:\n"
         "  -h, --help      show this help\n"
@@ -249,9 +253,41 @@ int main(int argc, char** argv) {
         if (args.size() < 3) return fail("usage: --details <designator> <file>");
         detailDesignator = args[1];
         inputPath = args[2];
+    } else if (mode == "--index") {
+        if (args.size() < 2) return fail("usage: --index <libraries/index.json>");
+        inputPath = args[1];
+    } else if (mode == "--search") {
+        if (args.size() < 3) return fail("usage: --search \"<words>\" <libraries/index.json>");
+        detailDesignator = args[1];      // the query
+        inputPath = args[2];
     } else {
         // Convenience: `pcbv-cli file.PcbDoc` behaves like --list.
         inputPath = mode;
+    }
+
+    if (mode == "--index" || mode == "--search") {
+        pcbv::PartIndex index;
+        std::string indexError;
+        if (!index.load(inputPath, indexError)) return fail(indexError);
+        if (mode == "--search") {
+            std::cout << pcbv::partMatchesToText(
+                index, pcbv::searchParts(index, detailDesignator), detailDesignator);
+            return 0;
+        }
+        std::cout << pcbv::partIndexToText(index);
+        const pcbv::PartIndexCheck check = pcbv::checkPartIndex(index);
+        if (check.missing == 0) {
+            std::cout << "\nFiles       every referenced file is present\n";
+        } else {
+            std::cout << "\nFiles       " << check.missing << " referenced file(s) missing\n";
+            for (const std::string& message : check.messages) {
+                std::cout << "  " << message << "\n";
+            }
+        }
+        for (const std::string& warning : index.warnings) {
+            std::cout << "note        " << warning << "\n";
+        }
+        return check.ok() ? 0 : 2;
     }
 
     if (mode == "--compare" || mode == "--compare-html") {

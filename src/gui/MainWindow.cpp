@@ -2103,7 +2103,7 @@ void MainWindow::attachLibraryModels() {
         if (board.document.type != pcbv::DocType::PcbDoc) continue;
         for (const DocumentSlot& library : slots_) {
             if (library.library.footprints.empty()) continue;
-            pcbv::attachModels(board.document, library.library);
+            pcbv::attachModels(board.document, library.library, library.path.toStdString());
         }
     }
     // The board tabs pick their new models up when they are activated again

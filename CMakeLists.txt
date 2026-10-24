@@ -42,15 +42,21 @@ add_library(pcbv_core STATIC
     src/core/Export.h
     src/core/Inflate.cpp
     src/core/Inflate.h
+    src/core/KiCadLibrary.cpp
+    src/core/KiCadLibrary.h
     src/core/Step.cpp
     src/core/Step.h
     src/core/Model.h
     src/core/Netlist.cpp
     src/core/Netlist.h
+    src/core/PartIndex.cpp
+    src/core/PartIndex.h
     src/core/Recent.cpp
     src/core/Recent.h
     src/core/Search.cpp
     src/core/Search.h
+    src/core/SExpr.cpp
+    src/core/SExpr.h
     src/core/ThreeD.cpp
     src/core/ThreeD.h
 )

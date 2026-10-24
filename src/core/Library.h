@@ -128,7 +128,11 @@ bool parsePadRecord(const std::vector<std::uint8_t>& data, std::size_t& pos, Pad
 /// Copies the real 3D models of the matching footprints onto the document's components.
 /// A component is matched to a footprint by its pattern name (exact after normalising case
 /// and punctuation, then a unique partial match). Returns how many components got a model.
-std::size_t attachModels(Document& document, const Library& library);
+/// Attaches the library's 3D models to the document's parts. `libraryPath` is the file the
+/// library came from; models that only reference a file (KiCad's `${KICAD*_3DMODEL_DIR}/…`)
+/// are looked up next to it and in `libraries/models3d` before they are given up on.
+std::size_t attachModels(Document& document, const Library& library,
+                         const std::string& libraryPath = std::string());
 
 /// Reads a library file and attaches whatever 3D models it has to `document`.
 std::size_t attachModelsFromFile(Document& document, const std::string& libraryPath,

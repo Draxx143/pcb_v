@@ -15,6 +15,7 @@
 #include "Library.h"
 #include "Bundle.h"
 #include "CompoundFile.h"
+#include "KiCadLibrary.h"
 
 namespace pcbv {
 namespace {
@@ -804,6 +805,9 @@ DocType detectType(const std::string& path) {
     if (text::endsWithNoCase(path, ".schlib")) return DocType::SchLib;
     // A PCB Viewer bundle carries both kinds; the file itself says which one it is.
     if (text::endsWithNoCase(path, ".pcbvlib")) return DocType::PcbLib;
+    // KiCad libraries: one footprint per file, every symbol of a library in one file.
+    if (text::endsWithNoCase(path, ".kicad_mod")) return DocType::PcbLib;
+    if (text::endsWithNoCase(path, ".kicad_sym")) return DocType::SchLib;
     return DocType::Unknown;
 }
 
@@ -907,6 +911,19 @@ ParseOutcome parseFile(const std::string& path) {
                     "(schematic).";
                 return outcome;
             }
+        } else if (looksLikeKiCad(head)) {
+            outcome.detected = "KiCad S-expression library";
+            const std::string text(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+            std::string kicadError;
+            if (!readKiCadLibrary(text, doc.fileName, outcome.library, kicadError)) {
+                outcome.error = "KiCad file could not be read: " + kicadError;
+                return outcome;
+            }
+            doc.type = outcome.library.type;
+            doc.container = Container::AsciiText;
+            buildLibraryDocument(doc, outcome.library);
+            outcome.ok = true;
+            return outcome;
         } else if (looksLikeAsciiAltium(head)) {
             outcome.detected = "Altium ASCII export (plain text records)";
             if (doc.type == DocType::PcbLib || doc.type == DocType::SchLib) {

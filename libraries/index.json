@@ -1,0 +1,6 @@
+{
+  "format": "pcbv-part-index",
+  "version": 1,
+  "note": "Rows are added by tools/import_kicad.py. Paths are relative to this file.",
+  "parts": []
+}

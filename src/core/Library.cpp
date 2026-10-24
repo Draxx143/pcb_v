@@ -21,6 +21,7 @@
 #include <map>
 #include <cctype>
 #include <cstdlib>
+#include <fstream>
 #include <sstream>
 
 #include "AltiumInternal.h"
@@ -1716,7 +1717,80 @@ const LibraryFootprint* matchByGeometry(const Component& component, const Librar
 
 } // namespace
 
-std::size_t attachModels(Document& document, const Library& library) {
+namespace {
+
+/// Reads a text file whole; empty on failure.
+std::string readTextFile(const std::filesystem::path& path) {
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(path, error)) return {};
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
+}
+
+/// Fills `model.stepText` from disk for a model that only references a file (KiCad style).
+/// The search is deterministic and local: the path as given (after expanding `${KICAD…}`),
+/// then the models3d folder of the project layout next to the library and the board.
+bool loadExternalModel(EmbeddedModel& model, const std::string& libraryPath) {
+    if (!model.stepText.empty()) return true;
+    const std::string& raw = model.sourcePath.empty() ? model.name : model.sourcePath;
+    if (raw.empty()) return false;
+
+    std::vector<std::filesystem::path> candidates;
+    std::string expanded = raw;
+    if (expanded.rfind("${", 0) == 0) {
+        const std::size_t close = expanded.find('}');
+        if (close != std::string::npos) {
+            const std::string variable = expanded.substr(2, close - 2);
+            const std::string rest = expanded.substr(close + 1);
+            for (const char* prefix : {"", "KICAD_", "KICAD6_", "KICAD7_", "KICAD8_", "KICAD9_"}) {
+                const std::string name = std::string(prefix) + "3DMODEL_DIR";
+                if (variable != name && variable != "KISYS3DMOD") continue;
+                if (const char* value = std::getenv(name.c_str())) {
+                    if (*value != '\0') {
+                        candidates.emplace_back(std::filesystem::path(value) / rest.substr(1));
+                    }
+                }
+            }
+        }
+    } else {
+        candidates.emplace_back(expanded);
+    }
+
+    const std::filesystem::path libraryFolder =
+        std::filesystem::path(libraryPath).has_parent_path()
+            ? std::filesystem::path(libraryPath).parent_path()
+            : std::filesystem::current_path();
+    for (const std::filesystem::path& base :
+         {libraryFolder, libraryFolder / "..", libraryFolder / ".." / "..",
+          std::filesystem::current_path()}) {
+        candidates.push_back(base / "models3d" / model.name);
+        candidates.push_back(base / "libraries" / "models3d" / model.name);
+        candidates.push_back(base / model.name);
+    }
+    if (const char* home = std::getenv("HOME")) {
+        candidates.emplace_back(std::filesystem::path(home) / ".local/share/pcbv/libraries" /
+                                "models3d" / model.name);
+    }
+    for (const std::filesystem::path& candidate : candidates) {
+        std::string text = readTextFile(candidate);
+        if (text.empty()) continue;
+        if (text.rfind("ISO-10303-21", 0) == std::string::npos &&
+            text.find("ISO-10303-21;") == std::string::npos) {
+            continue;   // not a STEP file
+        }
+        model.stepText = std::move(text);
+        return true;
+    }
+    return false;
+}
+
+} // namespace
+
+std::size_t attachModels(Document& document, const Library& library,
+                         const std::string& libraryPath) {
     if (library.footprints.empty()) return 0;
     std::size_t attached = 0;
     for (Component& component : document.components) {
@@ -1776,11 +1850,15 @@ std::size_t attachModels(Document& document, const Library& library) {
             component.partNumber = partProperty(match->parameters, "MPN");
         if (match->models.empty()) continue;
 
-        // Copy the models once and point the component at them.
-        for (const EmbeddedModel& model : match->models) {
-            if (model.stepText.empty()) continue;
-            if (component.modelIndex < 0) component.modelIndex = static_cast<int>(document.models.size());
-            document.models.push_back(model);
+        // Copy the models once and point the component at them. A model that only names a
+        // file (KiCad) is read from the disk first.
+        for (const EmbeddedModel& stored : match->models) {
+            EmbeddedModel model = stored;
+            if (!loadExternalModel(model, libraryPath)) continue;
+            if (component.modelIndex < 0) {
+                component.modelIndex = static_cast<int>(document.models.size());
+            }
+            document.models.push_back(std::move(model));
         }
         if (component.modelIndex >= 0) ++attached;
     }
@@ -1806,8 +1884,24 @@ std::string partProperty(const std::vector<Property>& parameters, const std::str
 
 namespace {
 
+bool endsWithNoCase(const std::string& text, const std::string& tail) {
+    if (text.size() < tail.size()) return false;
+    for (std::size_t i = 0; i < tail.size(); ++i) {
+        const char a = text[text.size() - tail.size() + i];
+        const char b = tail[i];
+        if (std::tolower(static_cast<unsigned char>(a)) !=
+            std::tolower(static_cast<unsigned char>(b))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/// A file the viewer can take footprints (and therefore 3D models) from: its own bundle
+/// format, or the open KiCad format.
 bool isBundlePath(const std::string& path) {
-    return path.size() > 8 && fingerprint(path.substr(path.size() - 8)) == "pcbvlib";
+    if (path.size() > 8 && fingerprint(path.substr(path.size() - 8)) == "pcbvlib") return true;
+    return endsWithNoCase(path, ".kicad_mod");
 }
 
 void addBundlesIn(const std::filesystem::path& folder, std::vector<std::string>& out) {
@@ -1847,6 +1941,10 @@ std::vector<std::string> findLibraryBundles(const std::string& boardPath) {
                                                                  : std::filesystem::current_path();
     addBundlesIn(folder, files);
     addBundlesIn(folder / "library", files);
+    // The standard project layout: libraries/footprints holds one KiCad footprint per file.
+    for (const std::filesystem::path& base : {folder, std::filesystem::path(".")}) {
+        addBundlesIn(base / "libraries" / "footprints", files);
+    }
 
     if (const char* configured = std::getenv("PCBV_LIBRARY")) {
         if (*configured != '\0') addBundlesIn(configured, files);
@@ -1858,6 +1956,7 @@ std::vector<std::string> findLibraryBundles(const std::string& boardPath) {
     if (!exeFolder.empty()) {
         addBundlesIn(exeFolder / "library", files);
         addBundlesIn(exeFolder / ".." / "library", files);
+        addBundlesIn(exeFolder / ".." / "libraries" / "footprints", files);
     }
     if (const char* home = std::getenv("HOME")) {
         addBundlesIn(std::filesystem::path(home) / ".local/share/pcbv/library", files);
@@ -1875,7 +1974,7 @@ LibraryAttachment attachLibraryFolder(Document& document, const std::string& boa
             continue;
         }
         if (outcome.library.footprints.empty()) continue;   // a symbol library: nothing 3D
-        const std::size_t matched = attachModels(document, outcome.library);
+        const std::size_t matched = attachModels(document, outcome.library, path);
         if (matched > 0) {
             ++result.libraries;
             result.parts += matched;
