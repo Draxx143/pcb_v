@@ -35,6 +35,7 @@ struct RenderPrimitive {
     bool selectable = false;         ///< true for copper primitives (click to highlight)
 
     std::string text;                ///< Text
+    int textAnchor = 0;              ///< Text: 0 = centred, 1 = left, 2 = right
     double fontSize = 0.0;           ///< Text, device units
     double rotation = 0.0;           ///< Text/rect rotation in degrees (board space)
     double x = 0.0, y = 0.0;         ///< Text anchor

@@ -307,6 +307,7 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
             text.x = view.x(label.x);
             text.y = view.y(label.y);
             text.rotation = -label.rotation;
+            text.textAnchor = label.anchor;
             push(text);
         }
     }

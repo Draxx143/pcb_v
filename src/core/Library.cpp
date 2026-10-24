@@ -161,9 +161,12 @@ bool readPadRecord(const std::vector<std::uint8_t>& data, std::size_t& pos, Pad&
     pad.rotation = rdF64(block, 52);
     pad.plated = rdB(block, 60) != 0;
 
-    // Trailing sub-record (per-layer shapes); skip it when present.
-    const std::size_t after = pos;
-    if (readBlock(data, pos, block) && block.empty()) pos = after;
+    // Trailing sub-record (per-layer shapes): always consume its size prefix, even when it
+    // is empty (size 0), otherwise the next record would start one byte into the size field.
+    if (pos + 4 <= data.size()) {
+        const std::uint32_t tailSize = rdU32(data, pos) & kBlockSizeMask;
+        if (pos + 4 + tailSize <= data.size()) pos += 4 + tailSize;
+    }
     return true;
 }
 
@@ -361,20 +364,34 @@ bool readPcbLibrary(CompoundFile& file, Library& library, std::string& error) {
         const std::string name = readStringBlock(data, pos);
         if (!name.empty()) names.push_back(name);
     }
-    if (names.empty()) {
-        // Fall back to the stored names: every storage under the root is a footprint,
-        // apart from the bookkeeping ones Altium always writes.
-        for (const FileEntry& entry : file.root().children) {
-            if (!entry.isStorage) continue;
-            if (entry.name == "Library" || entry.name == "FileVersionInfo") continue;
-            names.push_back(entry.name);
-        }
-    }
 
-    for (const std::string& name : names) {
+    // The OLE storage name is limited to 31 characters while the library keeps the full
+    // footprint name, so the storage has to be matched (by name, then by position).
+    std::vector<std::string> storages;
+    for (const FileEntry& entry : file.root().children) {
+        if (!entry.isStorage) continue;
+        if (entry.name == "Library" || entry.name == "FileVersionInfo" || entry.name == "Models")
+            continue;
+        storages.push_back(entry.name);
+    }
+    if (names.empty()) names = storages;
+
+    auto storageFor = [&file, &storages](const std::string& name, std::size_t index) {
+        if (file.exists(name + "/Data")) return name;
+        const std::string shortened = name.substr(0, 31);
+        for (const std::string& candidate : storages) {
+            if (candidate == shortened || name.compare(0, candidate.size(), candidate) == 0)
+                return candidate;
+        }
+        if (index < storages.size()) return storages[index];
+        return name;
+    };
+
+    for (std::size_t index = 0; index < names.size(); ++index) {
+        const std::string& name = names[index];
         LibraryFootprint footprint;
         footprint.name = name;
-        const std::string base = name;
+        const std::string base = storageFor(name, index);
 
         // Parameters stream (PATTERN / HEIGHT / DESCRIPTION / …).
         std::vector<std::uint8_t> parametersText = file.stream(base + "/Parameters");
@@ -634,17 +651,35 @@ constexpr double kSchUnit = 10.0;
 
 std::string pinElectricalName(int value) { return text::pinElectricalName(value); }
 
+/// Altium escapes a run of characters with a leading backslash ("S\\P\\I\\2\\_\\N\\S\\S\\"
+/// is "SPI2_NSS"), so drop the backslash in front of a printable character.
+std::string decodeEscapes(const std::string& value) {
+    if (value.find('\\') == std::string::npos) return value;
+    std::string out;
+    out.reserve(value.size());
+    for (std::size_t i = 0; i < value.size(); ++i) {
+        if (value[i] == '\\' && i + 1 < value.size() && value[i + 1] != '\\') {
+            out.push_back(value[++i]);
+            continue;
+        }
+        out.push_back(value[i]);
+    }
+    return out;
+}
+
 /// Applies one schematic record to a symbol: pins, texts, parameters and the drawing
 /// primitives (line, polyline, rectangle, round rectangle, arc, ellipse, text).
 void applySymbolRecord(const std::vector<Property>& props, int type, LibrarySymbol& symbol) {
     auto number = [&props](const char* key) { return text::parseNumber(valueOf(props, key)); };
     auto present = [&props](const char* key) { return text::find(props, key) != nullptr; };
+    // Every graphic primitive carries OWNERPARTID; -1 means it is shared by all parts.
+    const int ownerPart = text::parseInt(valueOf(props, "OWNERPARTID"), 1);
 
     switch (type) {
         case 2: {  // pin
             SymbolPin pin;
-            pin.designator = valueOf(props, "DESIGNATOR");
-            pin.name = valueOf(props, "NAME");
+            pin.designator = decodeEscapes(valueOf(props, "DESIGNATOR"));
+            pin.name = decodeEscapes(valueOf(props, "NAME"));
             pin.electrical = pinElectricalName(text::parseInt(valueOf(props, "ELECTRICAL"), 0));
             pin.x = number("LOCATION.X") * kSchUnit;
             pin.y = number("LOCATION.Y") * kSchUnit;
@@ -679,6 +714,7 @@ void applySymbolRecord(const std::vector<Property>& props, int type, LibrarySymb
         }
         case 13: {  // line
             SymbolShape shape;
+            shape.ownerPart = ownerPart;
             shape.kind = SymbolShape::Kind::Line;
             shape.points = {Point{number("X1") * kSchUnit, number("Y1") * kSchUnit},
                             Point{number("X2") * kSchUnit, number("Y2") * kSchUnit}};
@@ -689,6 +725,7 @@ void applySymbolRecord(const std::vector<Property>& props, int type, LibrarySymb
         case 6:   // polyline
         case 7: {  // polygon
             SymbolShape shape;
+            shape.ownerPart = ownerPart;
             shape.kind = SymbolShape::Kind::Polyline;
             shape.fill = type == 7 && text::equalsNoCase(valueOf(props, "FILLED"), "T") ? 2 : 0;
             const int count = text::parseInt(valueOf(props, "LOCATIONCOUNT"), 0);
@@ -704,6 +741,7 @@ void applySymbolRecord(const std::vector<Property>& props, int type, LibrarySymb
         case 14:    // rectangle
         case 10: {  // round rectangle
             SymbolShape shape;
+            shape.ownerPart = ownerPart;
             shape.kind = type == 10 ? SymbolShape::Kind::RoundRectangle : SymbolShape::Kind::Rectangle;
             shape.points = {Point{number("LOCATION.X") * kSchUnit, number("LOCATION.Y") * kSchUnit},
                             Point{number("CORNER.X") * kSchUnit, number("CORNER.Y") * kSchUnit}};
@@ -714,6 +752,7 @@ void applySymbolRecord(const std::vector<Property>& props, int type, LibrarySymb
         }
         case 12: {  // arc
             SymbolShape shape;
+            shape.ownerPart = ownerPart;
             shape.kind = SymbolShape::Kind::Arc;
             shape.points = {Point{number("LOCATION.X") * kSchUnit, number("LOCATION.Y") * kSchUnit}};
             shape.radius = number("RADIUS") * kSchUnit;
@@ -725,6 +764,7 @@ void applySymbolRecord(const std::vector<Property>& props, int type, LibrarySymb
         }
         case 8: {  // ellipse
             SymbolShape shape;
+            shape.ownerPart = ownerPart;
             shape.kind = SymbolShape::Kind::Ellipse;
             shape.points = {Point{number("LOCATION.X") * kSchUnit, number("LOCATION.Y") * kSchUnit}};
             shape.radius = number("RADIUS") * kSchUnit;
@@ -736,6 +776,7 @@ void applySymbolRecord(const std::vector<Property>& props, int type, LibrarySymb
         }
         case 28: {  // text
             SymbolShape shape;
+            shape.ownerPart = ownerPart;
             shape.kind = SymbolShape::Kind::Text;
             shape.text = valueOf(props, "TEXT");
             shape.points = {Point{number("LOCATION.X") * kSchUnit, number("LOCATION.Y") * kSchUnit}};
@@ -1055,6 +1096,18 @@ Document symbolDocument(const LibrarySymbol& symbol, const std::string& fileName
         document.geometry.tracks.push_back(track);
     };
     // Body text sits on the pale-yellow fill, so it is drawn dark like Altium does.
+    auto addTextAligned = [&document](double x, double y, const std::string& text, double height,
+                                      int anchor, std::uint32_t color) {
+        TextFeature label;
+        label.x = x;
+        label.y = y;
+        label.text = text;
+        label.height = height;
+        label.layer = 33;
+        label.color = color;
+        label.anchor = anchor;
+        document.geometry.texts.push_back(label);
+    };
     auto addText = [&document](double x, double y, const std::string& text, double height) {
         TextFeature label;
         label.x = x;
@@ -1076,7 +1129,73 @@ Document symbolDocument(const LibrarySymbol& symbol, const std::string& fileName
         document.geometry.texts.push_back(label);
     };
 
+    // A multi-part symbol keeps every part in the same coordinate space, so drawing the
+    // parts as they are stored would stack them on top of each other. Shift each part to
+    // its own column instead, which is how a compound symbol reads in Altium's editor.
+    std::vector<int> parts;
     for (const SymbolShape& shape : symbol.shapes) {
+        if (shape.ownerPart > 0) parts.push_back(shape.ownerPart);
+    }
+    for (const SymbolPin& pin : symbol.pinGeometry) {
+        if (pin.ownerPart > 0) parts.push_back(pin.ownerPart);
+    }
+    std::sort(parts.begin(), parts.end());
+    parts.erase(std::unique(parts.begin(), parts.end()), parts.end());
+    if (parts.size() < 2) parts.assign(1, 1);
+
+    auto partOf = [&parts](int owner) {
+        return std::find(parts.begin(), parts.end(), owner) != parts.end() ? owner : parts.front();
+    };
+
+    // Horizontal extent of every part (body rectangles and pins), used for the columns.
+    std::map<int, std::pair<double, double>> extent;
+    auto touchX = [&extent](int part, double x) {
+        auto it = extent.find(part);
+        if (it == extent.end()) {
+            extent.emplace(part, std::make_pair(x, x));
+        } else {
+            it->second.first = std::min(it->second.first, x);
+            it->second.second = std::max(it->second.second, x);
+        }
+    };
+    for (const SymbolShape& shape : symbol.shapes) {
+        const int part = partOf(shape.ownerPart);
+        for (const Point& point : shape.points) touchX(part, point.x);
+        if (shape.points.empty()) touchX(part, 0.0);
+    }
+    for (const SymbolPin& pin : symbol.pinGeometry) {
+        if (pin.hidden) continue;
+        const int part = partOf(pin.ownerPart);
+        touchX(part, pin.x);
+        touchX(part, pin.x + (pin.rotation == 180 ? -pin.length : pin.length));
+    }
+
+    std::map<int, double> shiftX;
+    {
+        const double columnGap = 900.0;
+        double cursor = 0.0;
+        for (const int part : parts) {
+            const auto& range = extent[part];
+            shiftX[part] = cursor - range.first;
+            cursor += (range.second - range.first) + columnGap;
+        }
+    }
+
+    const std::vector<SymbolShape> shapes = [&] {
+        std::vector<SymbolShape> shifted = symbol.shapes;
+        for (SymbolShape& shape : shifted) {
+            const double offset = shiftX[partOf(shape.ownerPart)];
+            for (Point& point : shape.points) point.x += offset;
+        }
+        return shifted;
+    }();
+    const std::vector<SymbolPin> pins = [&] {
+        std::vector<SymbolPin> shifted = symbol.pinGeometry;
+        for (SymbolPin& pin : shifted) pin.x += shiftX[partOf(pin.ownerPart)];
+        return shifted;
+    }();
+
+    for (const SymbolShape& shape : shapes) {
         const double stroke = shape.width > 0.0 ? shape.width : 8.0;
         switch (shape.kind) {
             case SymbolShape::Kind::Line:
@@ -1165,7 +1284,39 @@ Document symbolDocument(const LibrarySymbol& symbol, const std::string& fileName
     // Pins: Altium stores the pin's body-side point in LOCATION and draws the pin outwards
     // in the orientation direction, so the connection point is the far end.
     const double pinText = 50.0;
-    for (const SymbolPin& pin : symbol.pinGeometry) {
+
+    // The body of a part is the union of its (round) rectangles. Pin names are clipped to
+    // it, the way Altium clips them, so a long name can never spill onto the background.
+    struct BodyRect {
+        double minX = 0.0, maxX = 0.0, minY = 0.0, maxY = 0.0;
+        bool valid = false;
+    };
+    std::map<int, BodyRect> bodies;
+    for (const SymbolShape& shape : shapes) {
+        if (shape.kind != SymbolShape::Kind::Rectangle &&
+            shape.kind != SymbolShape::Kind::RoundRectangle) {
+            continue;
+        }
+        if (shape.points.size() < 2) continue;
+        BodyRect& body = bodies[partOf(shape.ownerPart)];
+        const double x1 = std::min(shape.points[0].x, shape.points[1].x);
+        const double x2 = std::max(shape.points[0].x, shape.points[1].x);
+        const double y1 = std::min(shape.points[0].y, shape.points[1].y);
+        const double y2 = std::max(shape.points[0].y, shape.points[1].y);
+        if (!body.valid) {
+            body.minX = x1;
+            body.maxX = x2;
+            body.minY = y1;
+            body.maxY = y2;
+            body.valid = true;
+        } else {
+            body.minX = std::min(body.minX, x1);
+            body.maxX = std::max(body.maxX, x2);
+            body.minY = std::min(body.minY, y1);
+            body.maxY = std::max(body.maxY, y2);
+        }
+    }
+    for (const SymbolPin& pin : pins) {
         if (pin.hidden) continue;
         double dx = 1.0;
         double dy = 0.0;
@@ -1190,15 +1341,54 @@ Document symbolDocument(const LibrarySymbol& symbol, const std::string& fileName
                        (pin.y + endY) / 2.0 + (dy == 0.0 ? 16.0 : 8.0), pin.designator, pinText);
         }
         if (pin.showName && !pin.name.empty()) {
-            // Pin names sit inside the symbol body, pin numbers above the pin.
-            const double width = static_cast<double>(pin.name.size()) * pinText * 0.62;
+            // Pin names sit inside the body. They are anchored at the body edge and grow away
+            // from it, so a long name can never run into the pins on the other side.
             double nameX = pin.x;
             double nameY = pin.y - pinText * 0.35;
-            if (dx > 0.0) nameX = pin.x - 24.0 - width;       // body is to the left
-            else if (dx < 0.0) nameX = pin.x + 24.0;          // body is to the right
-            else if (dy > 0.0) nameY = pin.y - 30.0 - pinText * 0.5;
-            else { nameY = pin.y + 30.0; }
-            addText(nameX, nameY, pin.name, pinText);
+            int anchor = 1;  // left aligned
+            if (dx > 0.0) {           // body is to the left of the pin: grow leftwards
+                nameX = pin.x - 24.0;
+                anchor = 2;
+            } else if (dx < 0.0) {    // body is to the right: grow rightwards
+                nameX = pin.x + 24.0;
+                anchor = 1;
+            } else if (dy > 0.0) {
+                nameY = pin.y - 30.0 - pinText * 0.5;
+                anchor = 0;
+            } else {
+                nameY = pin.y + 30.0;
+                anchor = 0;
+            }
+            std::string name = pin.name;
+            const auto bodyIt = bodies.find(partOf(pin.ownerPart));
+            if (bodyIt != bodies.end() && bodyIt->second.valid && (anchor == 1 || anchor == 2)) {
+                // Names grow from the body edge towards the middle; each side may use at most
+                // half of the body (minus a small gap), so the two columns never overlap.
+                // Roughly 0.62 × the text height per character.
+                const double bodyCenterX = (bodyIt->second.minX + bodyIt->second.maxX) / 2.0;
+                const double usable = anchor == 1 ? (bodyCenterX - 40.0) - nameX
+                                                  : nameX - (bodyCenterX + 40.0);
+                const std::size_t maxChars =
+                    static_cast<std::size_t>(std::max(0.0, usable / (pinText * 0.62)));
+                if (name.size() > maxChars && maxChars > 3)
+                    name = name.substr(0, maxChars - 3) + "...";
+            }
+            addTextAligned(nameX, nameY, name, pinText, anchor, 0x171b21);
+        }
+    }
+
+    // Label each column of a compound symbol, so it is obvious which part is which.
+    if (parts.size() > 1) {
+        for (const int part : parts) {
+            const auto it = bodies.find(part);
+            if (it == bodies.end() || !it->second.valid) continue;
+            const double captionHeight =
+                std::max(80.0, (it->second.maxY - it->second.minY) * 0.06);
+            addTextAligned((it->second.minX + it->second.maxX) / 2.0,
+                           it->second.minY - captionHeight * 1.8,
+                           "Part " + std::to_string(part) + " / " +
+                               std::to_string(parts.size()),
+                           captionHeight, 0, 0x93a6bc);
         }
     }
 
@@ -1236,6 +1426,12 @@ Document symbolDocument(const LibrarySymbol& symbol, const std::string& fileName
     finalizeBoard(document);
     return document;
 }
+
+namespace detail {
+bool parsePadRecord(const std::vector<std::uint8_t>& data, std::size_t& pos, Pad& pad) {
+    return readPadRecord(data, pos, pad);
+}
+} // namespace detail
 
 std::string librarySummary(const Library& library) {
     std::ostringstream out;

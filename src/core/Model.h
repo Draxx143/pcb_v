@@ -112,6 +112,7 @@ struct TextFeature {
     int layer = 0;
     std::string text;
     std::uint32_t color = 0;  // 0xRRGGBB override (0 = use the layer colour)
+    int anchor = 0;           // 0 = centred, 1 = left aligned, 2 = right aligned
 };
 
 /// Every drawable primitive of a PCB document (used by the board view / SVG export).

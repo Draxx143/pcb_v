@@ -50,6 +50,7 @@ struct SymbolShape {
     std::string text;              // text shapes
     double textHeight = 0.0;       // mil
     int color = 0;                 // 0 = default (layer colour)
+    int ownerPart = 1;             // sub-part the shape belongs to (0/-1 = shared)
 };
 
 /// A pin with its drawing geometry (schematic symbols).
@@ -114,6 +115,14 @@ Document footprintDocument(const LibraryFootprint& footprint, const std::string&
 /// model (lines/polylines -> tracks, rectangles/ellipses -> regions, text -> labels),
 /// so the board view, the SVG export and printing work without a second renderer.
 Document symbolDocument(const LibrarySymbol& symbol, const std::string& fileName);
+
+/// Record-level helpers, exposed so the smoke test can feed a record stream directly
+/// (a real .PcbLib is a compound file, which the test cannot build byte by byte).
+namespace detail {
+/// Reads one PcbLib pad record at `pos` and advances past it. A pad record always ends
+/// with a per-layer sub-record whose size must be consumed even when it is zero.
+bool parsePadRecord(const std::vector<std::uint8_t>& data, std::size_t& pos, Pad& pad);
+} // namespace detail
 
 /// One-line summary, e.g. "PcbLib · 12 footprints · 0 symbols".
 std::string librarySummary(const Library& library);

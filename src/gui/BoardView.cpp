@@ -895,19 +895,30 @@ void BoardView::drawPrimitives(QPainter& painter, double scale, bool forPrint) c
                 QFont font(QStringLiteral("Arial"));
                 font.setPixelSize(std::max(static_cast<int>(std::lround(primitive.fontSize)), 1));
                 painter.setFont(font);
-                const QRectF box(-2000.0, -primitive.fontSize, 4000.0, primitive.fontSize * 2.0);
                 if (primitive.strokeWidth > 0.0) {
                     QPainterPath path;
                     QFontMetricsF metrics(font);
                     const double textWidth = metrics.horizontalAdvance(QString::fromStdString(primitive.text));
-                    path.addText(-textWidth / 2.0, 0.0, font, QString::fromStdString(primitive.text));
+                    const double offset = primitive.textAnchor == 1 ? 0.0
+                                          : primitive.textAnchor == 2 ? -textWidth
+                                                                      : -textWidth / 2.0;
+                    path.addText(offset, 0.0, font, QString::fromStdString(primitive.text));
                     painter.setPen(QPen(paint(0x10141a), primitive.strokeWidth));
                     painter.setBrush(paint(primitive.color));
                     painter.drawPath(path);
                 } else {
                     painter.setPen(paint(primitive.color));
-                    painter.drawText(box, Qt::AlignHCenter | Qt::AlignVCenter,
-                                     QString::fromStdString(primitive.text));
+                    const int alignment = primitive.textAnchor == 1
+                                              ? (Qt::AlignLeft | Qt::AlignVCenter)
+                                              : primitive.textAnchor == 2
+                                                    ? (Qt::AlignRight | Qt::AlignVCenter)
+                                                    : (Qt::AlignHCenter | Qt::AlignVCenter);
+                    const QRectF box(primitive.textAnchor == 1 ? 0.0
+                                                                 : primitive.textAnchor == 2
+                                                                       ? -4000.0
+                                                                       : -2000.0,
+                                     -primitive.fontSize, 4000.0, primitive.fontSize * 2.0);
+                    painter.drawText(box, alignment, QString::fromStdString(primitive.text));
                 }
                 painter.restore();
                 break;

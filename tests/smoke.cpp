@@ -4,6 +4,8 @@
 //   pcbv-smoke file.PcbDoc ...      parse real documents and verify invariants
 //
 // Exit code 0 = everything passed.
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -232,13 +234,14 @@ void selfTest() {
             "|RECORD=1|LIBREFERENCE=OPAMP|COMPONENTDESCRIPTION=Op-amp\r\n"
             "|RECORD=14|OWNERINDEX=0|LOCATION.X=-100|LOCATION.Y=-100|CORNER.X=100|CORNER.Y=100|"
             "FILLED=T\r\n"
-            // PINCONGLOMERATE: bits 0-1 orientation (1 = left), 0x10 = show designator.
+            // PINCONGLOMERATE: bits 0-1 orientation (1 = left), 0x08 = show name,
+            // 0x10 = show designator.
             "|RECORD=2|OWNERINDEX=0|DESIGNATOR=1|NAME=+IN|ELECTRICAL=0|LOCATION.X=-200|LOCATION.Y=-50|"
-            "PINLENGTH=100|PINCONGLOMERATE=18\r\n"
+            "PINLENGTH=100|PINCONGLOMERATE=26\r\n"
             "|RECORD=2|OWNERINDEX=0|DESIGNATOR=2|NAME=-IN|ELECTRICAL=0|LOCATION.X=-200|LOCATION.Y=50|"
-            "PINLENGTH=100|PINCONGLOMERATE=18\r\n"
+            "PINLENGTH=100|PINCONGLOMERATE=26\r\n"
             "|RECORD=2|OWNERINDEX=0|DESIGNATOR=3|NAME=OUT|ELECTRICAL=2|LOCATION.X=200|LOCATION.Y=0|"
-            "PINLENGTH=100|PINCONGLOMERATE=16\r\n";
+            "PINLENGTH=100|PINCONGLOMERATE=24\r\n";
         if (FILE* f = std::fopen(drawPath.c_str(), "wb")) {
             std::fwrite(drawText.data(), 1, drawText.size(), f);
             std::fclose(f);
@@ -265,9 +268,129 @@ void selfTest() {
                   "symbol drawing has real extents");
             check(pcbv::toSvg(drawn).find("<svg") != std::string::npos,
                   "a symbol can be exported as SVG");
+
+            // Pin names are anchored at the body edge (1 = left at the left edge, 2 = right
+            // at the right edge) so the board view and the SVG export draw them inwards.
+            bool leftAnchored = false;
+            bool rightAnchored = false;
+            for (const pcbv::TextFeature& label : drawn.geometry.texts) {
+                if (label.text == "+IN" || label.text == "-IN") leftAnchored = label.anchor == 1;
+                if (label.text == "OUT") rightAnchored = label.anchor == 2;
+            }
+            check(leftAnchored && rightAnchored,
+                  "pin names carry their text alignment");
+            pcbv::BoardRenderOptions options;
+            options.hiddenLayers = pcbv::defaultHiddenLayers();
+            const pcbv::BoardRenderList rendered = pcbv::buildBoardRender(drawn, options);
+            bool anchorReachedRenderer = false;
+            for (const pcbv::RenderPrimitive& primitive : rendered.primitives) {
+                if (primitive.text == "OUT" && primitive.textAnchor == 2) anchorReachedRenderer = true;
+            }
+            check(anchorReachedRenderer, "text alignment reaches the renderer");
         }
+
+        // A compound (multi-part) symbol keeps every part in one coordinate space; the parts
+        // must not be stacked on top of each other, and Altium's "\x" escapes decode.
+        const std::string multiPath = "/tmp/pcbv-smoke-multi.SchLib";
+        const std::string multiText =
+            "|HEADER=Protel for Windows - Schematic Capture Ascii File Version 5.0|WEIGHT=3\r\n"
+            "|RECORD=1|LIBREFERENCE=MULTI|PARTCOUNT=3|COMPONENTDESCRIPTION=Dual op-amp\r\n"
+            "|RECORD=14|OWNERINDEX=0|OWNERPARTID=1|LOCATION.X=-100|LOCATION.Y=-100|"
+            "CORNER.X=100|CORNER.Y=100|FILLED=T\r\n"
+            "|RECORD=14|OWNERINDEX=0|OWNERPARTID=2|LOCATION.X=-100|LOCATION.Y=-100|"
+            "CORNER.X=100|CORNER.Y=100|FILLED=T\r\n"
+            "|RECORD=2|OWNERINDEX=0|OWNERPARTID=1|DESIGNATOR=1|NAME=S\\P\\I\\2\\_\\N\\S\\S|"
+            "ELECTRICAL=0|LOCATION.X=-200|LOCATION.Y=0|PINLENGTH=100|PINCONGLOMERATE=18\r\n"
+            "|RECORD=2|OWNERINDEX=0|OWNERPARTID=2|DESIGNATOR=2|NAME=OUT|ELECTRICAL=2|"
+            "LOCATION.X=200|LOCATION.Y=0|PINLENGTH=100|PINCONGLOMERATE=16\r\n";
+        if (FILE* f = std::fopen(multiPath.c_str(), "wb")) {
+            std::fwrite(multiText.data(), 1, multiText.size(), f);
+            std::fclose(f);
+        }
+        const pcbv::ParseOutcome multi = pcbv::parseFile(multiPath);
+        check(multi.ok && multi.library.symbols.size() == 1, "compound symbol fixture parses");
+        if (multi.ok && !multi.library.symbols.empty()) {
+            const pcbv::LibrarySymbol& symbol = multi.library.symbols.front();
+            check(symbol.partCount == 2, "sub-part count is read");
+            check(symbol.shapes.size() == 2 && symbol.shapes[0].ownerPart == 1 &&
+                      symbol.shapes[1].ownerPart == 2,
+                  "each body rectangle knows its part");
+            check(!symbol.pinGeometry.empty() && symbol.pinGeometry[0].name == "SPI2_NSS",
+                  "escaped pin names are decoded");
+            const pcbv::Document drawn = pcbv::symbolDocument(symbol, "MULTI");
+            check(drawn.geometry.fills.size() == 2, "both parts are drawn");
+            if (drawn.geometry.fills.size() == 2) {
+                const pcbv::FillFeature& first = drawn.geometry.fills[0];
+                const pcbv::FillFeature& second = drawn.geometry.fills[1];
+                const double firstMax = std::max(first.x1, first.x2);
+                const double secondMin = std::min(second.x1, second.x2);
+                check(secondMin - firstMax > 100.0,
+                      "multi-part symbols are laid out side by side");
+            }
+            bool captioned = false;
+            for (const pcbv::TextFeature& label : drawn.geometry.texts) {
+                if (label.text == "Part 2 / 2") captioned = true;
+            }
+            check(captioned, "each part of a compound symbol is labelled");
+        }
+        std::remove(multiPath.c_str());
         std::remove(drawPath.c_str());
         std::remove(schLibPath.c_str());
+    }
+
+    // --- PcbLib pad records -------------------------------------------------
+    // A pad record always ends with a per-layer sub-record. Even an empty one costs four
+    // bytes (its zero size prefix); skipping it makes the reader eat the first byte of the
+    // next record, which used to lose every pad after the first one.
+    {
+        std::vector<std::uint8_t> stream;
+        auto putU32 = [&stream](std::uint32_t value) {
+            for (int i = 0; i < 4; ++i) stream.push_back(static_cast<std::uint8_t>((value >> (8 * i)) & 0xFF));
+        };
+        auto putString = [&stream, &putU32](const std::string& value) {
+            putU32(static_cast<std::uint32_t>(value.size() + 1));
+            stream.push_back(static_cast<std::uint8_t>(value.size()));
+            stream.insert(stream.end(), value.begin(), value.end());
+        };
+        auto putPad = [&](const std::string& name, double xMil, double yMil) {
+            stream.push_back(2);  // PcbPrimitiveObjectId::Pad
+            putString(name);
+            putString("");
+            putString("");
+            putU32(1);            // padding block
+            stream.push_back(0);
+            std::vector<std::uint8_t> block(64, 0);
+            block[0] = 1;         // TOP layer
+            const auto put = [&block](std::size_t offset, std::int32_t value) {
+                const std::uint32_t raw = static_cast<std::uint32_t>(value);
+                for (int i = 0; i < 4; ++i) block[offset + i] = static_cast<std::uint8_t>((raw >> (8 * i)) & 0xFF);
+            };
+            put(13, static_cast<std::int32_t>(xMil * 10000.0));
+            put(17, static_cast<std::int32_t>(yMil * 10000.0));
+            put(21, static_cast<std::int32_t>(20.0 * 10000.0));   // width
+            put(25, static_cast<std::int32_t>(20.0 * 10000.0));   // height
+            put(45, 0);                                           // hole size
+            block[60] = 1;                                        // plated
+            putU32(static_cast<std::uint32_t>(block.size()));
+            stream.insert(stream.end(), block.begin(), block.end());
+            putU32(0);            // empty per-layer sub-record (still four bytes)
+        };
+
+        putPad("1", 10.0, 20.0);
+        putPad("2", 30.0, 40.0);
+        stream.push_back(4);      // the next record: a track
+
+        std::size_t pos = 0;
+        pcbv::Pad first;
+        pcbv::Pad second;
+        const bool firstOk = pcbv::detail::parsePadRecord(stream, pos, first);
+        const bool secondOk = pcbv::detail::parsePadRecord(stream, pos, second);
+        check(firstOk && secondOk && first.designator == "1" && second.designator == "2",
+              "both pads of a stream are read");
+        check(std::abs(first.x - 10.0) < 0.01 && std::abs(second.y - 40.0) < 0.01,
+              "pad positions are converted to mil");
+        check(pos < stream.size() && stream[pos] == 4,
+              "an empty pad sub-record does not swallow the next record");
     }
 
     // --- global search across documents --------------------------------------

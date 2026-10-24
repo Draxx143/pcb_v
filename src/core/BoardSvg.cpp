@@ -116,7 +116,10 @@ std::string toSvg(const Document& doc, const BoardRenderOptions& options) {
                 svg << "  <text x=\"" << f(primitive.x) << "\" y=\"" << f(primitive.y)
                     << "\" font-family=\"Arial, Helvetica, sans-serif\" font-size=\""
                     << f(primitive.fontSize) << "\" fill=\"" << color
-                    << "\" text-anchor=\"middle\"";
+                    << "\" text-anchor=\""
+                    << (primitive.textAnchor == 1 ? "start"
+                                                  : primitive.textAnchor == 2 ? "end" : "middle")
+                    << "\"";
                 if (primitive.rotation != 0.0) {
                     svg << " transform=\"rotate(" << f(primitive.rotation) << " "
                         << f(primitive.x) << " " << f(primitive.y) << ")\"";
