@@ -95,6 +95,7 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
         for (const auto& point : doc.geometry.outline) {
             outline.points.push_back(Point{view.x(point.x), view.y(point.y)});
         }
+        list.boardOutline = outline.points;
         push(outline);
         RenderPrimitive edge = outline;
         edge.filled = false;
@@ -113,6 +114,7 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
         frame.points = {Point{x0, y0}, Point{x0 + view.width * view.unit, y0},
                         Point{x0 + view.width * view.unit, y0 + view.height * view.unit},
                         Point{x0, y0 + view.height * view.unit}};
+        list.boardOutline = frame.points;
         push(frame);
     }
 

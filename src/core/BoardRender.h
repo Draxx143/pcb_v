@@ -49,6 +49,11 @@ struct BoardRenderList {
     double unitsPerMil = 1.0;  ///< device units per mil (used to recover real sizes)
     std::vector<RenderPrimitive> primitives;
 
+    /// The board edge in the same device space as the primitives (0 = no outline).
+    /// Everything else draws the board itself; the 3D view needs the exact same outline
+    /// it paints in 2D, otherwise the parts and the board drift apart.
+    std::vector<Point> boardOutline;
+
     bool empty() const { return primitives.empty(); }
 };
 

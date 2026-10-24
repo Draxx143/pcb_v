@@ -393,6 +393,80 @@ void selfTest() {
               "an empty pad sub-record does not swallow the next record");
     }
 
+    // --- board outline on the display list -----------------------------------
+    // The 3D view draws the board from list.boardOutline and the parts from the
+    // primitives, so both have to live in the same device space — otherwise the parts
+    // float away from the board (and get mirrored) when the view is tilted.
+    {
+        const std::string path = "/tmp/pcbv-smoke-outline.PcbDoc";
+        const std::string text =
+            "|RECORD=Board|KIND=Protel_Advanced_PCB|VERSION=5.00|"
+            "KIND0=0|VX0=1000mil|VY0=800mil|KIND1=0|VX1=3350mil|VY1=800mil|"
+            "KIND2=0|VX2=3350mil|VY2=2750mil|KIND3=0|VX3=1000mil|VY3=2750mil\r\n"
+            "|RECORD=Component|ID=0|LAYER=TOP|X=2100mil|Y=1800mil|PATTERN=QFN|"
+            "SOURCEDESIGNATOR=U1\r\n"
+            "|RECORD=Pad|COMPONENT=0|LAYER=TOP|NAME=1|X=2100mil|Y=1800mil|XSIZE=40mil|"
+            "YSIZE=40mil\r\n";
+        if (FILE* f = std::fopen(path.c_str(), "wb")) {
+            std::fwrite(text.data(), 1, text.size(), f);
+            std::fclose(f);
+        }
+        const pcbv::ParseOutcome parsed = pcbv::parseFile(path);
+        check(parsed.ok && parsed.document.geometry.outline.size() == 4,
+              "ASCII board outline is read");
+        pcbv::BoardRenderOptions renderOptions;
+        renderOptions.hiddenLayers = pcbv::defaultHiddenLayers();
+        const pcbv::BoardRenderList list =
+            pcbv::buildBoardRender(parsed.document, renderOptions);
+        check(list.boardOutline.size() >= 3, "the display list carries the board outline");
+
+        const double unitsPerMm = list.unitsPerMil / 0.0254;
+        auto toBoardMm = [unitsPerMm](const pcbv::Point& point) {
+            return pcbv::Point{point.x / unitsPerMm, -point.y / unitsPerMm};
+        };
+        std::vector<pcbv::Point> outlineMm;
+        for (const pcbv::Point& point : list.boardOutline) outlineMm.push_back(toBoardMm(point));
+
+        // A simple even-odd test: nothing may stick out of the board.
+        auto inside = [&outlineMm](const pcbv::Point& point) {
+            bool in = false;
+            for (std::size_t i = 0, j = outlineMm.size() - 1; i < outlineMm.size(); j = i++) {
+                const pcbv::Point& a = outlineMm[i];
+                const pcbv::Point& b = outlineMm[j];
+                if ((a.y > point.y) != (b.y > point.y) &&
+                    point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x) {
+                    in = !in;
+                }
+            }
+            return in;
+        };
+        // Every primitive except the board edge itself must fall inside the outline.
+        bool sawPart = false;
+        bool partOutside = false;
+        for (const pcbv::RenderPrimitive& primitive : list.primitives) {
+            if (primitive.background) continue;
+            // The board edge itself is not a part.
+            bool isBoardEdge = primitive.points.size() == list.boardOutline.size() &&
+                               !primitive.points.empty();
+            for (std::size_t i = 0; isBoardEdge && i < primitive.points.size(); ++i) {
+                isBoardEdge = primitive.points[i].x == list.boardOutline[i].x &&
+                              primitive.points[i].y == list.boardOutline[i].y;
+            }
+            if (isBoardEdge) continue;
+            pcbv::Point sample{primitive.x, primitive.y};
+            if (primitive.kind == pcbv::RenderPrimitive::Kind::Circle) {
+                sample = primitive.center;
+            } else if (!primitive.points.empty()) {
+                sample = primitive.points.front();
+            }
+            sawPart = true;
+            if (!inside(toBoardMm(sample))) partOutside = true;
+        }
+        check(sawPart && !partOutside,
+              "every primitive of the 3D view lands inside the board outline");
+        std::remove(path.c_str());
+    }
+
     // --- global search across documents --------------------------------------
     {
         const std::string path = "/tmp/pcbv-smoke-search.PcbDoc";

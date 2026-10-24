@@ -976,6 +976,7 @@ void BoardView::paintThreeD(QPainter& painter) {
         bool line = false;
         double width = 1.0;
         double depth = 0.0;
+        int sequence = 0;   // display list order: the same painter order as the 2D view
         QString text;
         QPointF textPos;
         double textSize = 0.0;
@@ -984,23 +985,20 @@ void BoardView::paintThreeD(QPainter& painter) {
     constexpr double kThicknessMm = 1.6;
     const double unitsPerMm = list_.unitsPerMil > 0.0 ? list_.unitsPerMil / 0.0254 : 1.0;
 
-    // --- board outline in mm, centred on the origin -------------------------
+    // --- board outline in mm ------------------------------------------------
+    // The display list is what the 2D view paints, so its Y axis points down. The 3D
+    // scene uses a normal "Y up" board space and takes the outline from the very same
+    // list: the parts and the board then always land on top of each other.
+    auto toBoardMm = [unitsPerMm](const pcbv::Point& point) {
+        return QPointF(point.x / unitsPerMm, -point.y / unitsPerMm);
+    };
     std::vector<QPointF> outline;
-    if (document_.geometry.outline.size() >= 3) {
-        for (const auto& point : document_.geometry.outline) {
-            outline.push_back(QPointF(point.x * 0.0254, point.y * 0.0254));
-        }
-    } else {
-        const pcbv::Bounds& bounds = document_.bounds;
-        outline = {QPointF(bounds.minX * 0.0254, bounds.minY * 0.0254),
-                   QPointF(bounds.maxX * 0.0254, bounds.minY * 0.0254),
-                   QPointF(bounds.maxX * 0.0254, bounds.maxY * 0.0254),
-                   QPointF(bounds.minX * 0.0254, bounds.maxY * 0.0254)};
+    for (const pcbv::Point& point : list_.boardOutline) outline.push_back(toBoardMm(point));
+    if (outline.size() < 3) {
+        outline = {toBoardMm(pcbv::Point{0.0, 0.0}), toBoardMm(pcbv::Point{list_.width, 0.0}),
+                   toBoardMm(pcbv::Point{list_.width, list_.height}),
+                   toBoardMm(pcbv::Point{0.0, list_.height})};
     }
-    QPointF centre(0.0, 0.0);
-    for (const auto& point : outline) centre += point;
-    centre /= static_cast<double>(outline.size());
-    for (auto& point : outline) point -= centre;
 
     // --- camera --------------------------------------------------------------
     const double yaw = yawDeg_ * kPi3D / 180.0;
@@ -1040,11 +1038,13 @@ void BoardView::paintThreeD(QPainter& painter) {
     std::vector<Item> faceBottom, bottomItems, wallItems, faceTop, topItems;
 
     auto addFace = [&](std::vector<Item>& bucket, const std::vector<QPointF>& points, double z,
-                       const QColor& color, bool filled, double width, double depthBias) {
+                       const QColor& color, bool filled, double width, double depthBias,
+                       int order = 0) {
         Item item;
         item.filled = filled;
         item.color = color;
         item.width = width;
+        item.order = order;
         double depthSum = 0.0;
         for (const auto& point : points) {
             double depth = 0.0;
@@ -1055,8 +1055,8 @@ void BoardView::paintThreeD(QPainter& painter) {
         bucket.push_back(item);
     };
 
-    addFace(faceBottom, outline, 0.0, QColor(0x08, 0x0c, 0x11), true, 0.0, 8.0);
-    addFace(faceTop, outline, kThicknessMm, QColor(0x16, 0x20, 0x2b), true, 0.0, -8.0);
+    addFace(faceBottom, outline, 0.0, QColor(0x0a, 0x10, 0x16), true, 0.0, 8.0);
+    addFace(faceTop, outline, kThicknessMm, QColor(0x1a, 0x24, 0x30), true, 0.0, -8.0);
 
     // Side walls, shaded by how much they face the viewer.
     for (std::size_t i = 0; i < outline.size(); ++i) {
@@ -1078,9 +1078,13 @@ void BoardView::paintThreeD(QPainter& painter) {
         wallItems.push_back(quad);
     }
 
-    // Primitives: copper, silk, pads and designators, each on its own face.
+    // Primitives: copper, silk, pads and designators, each on its own face. They are
+    // painted in display-list order — the very order the 2D view uses — because everything
+    // on a face is coplanar and a depth sort would let a big pour cover the pads on it.
+    int sequence = 0;
     for (const auto& primitive : list_.primitives) {
         if (primitive.background) continue;
+        ++sequence;
         const bool bottom = isBottomLayer(primitive.layer);
         const double z = bottom ? -0.02 : kThicknessMm + 0.02;
         std::vector<Item>& bucket = bottom ? bottomItems : topItems;
@@ -1093,11 +1097,10 @@ void BoardView::paintThreeD(QPainter& painter) {
                 if (primitive.points.size() < 2) break;
                 std::vector<QPointF> mm;
                 mm.reserve(primitive.points.size());
-                for (const auto& point : primitive.points) {
-                    mm.push_back(QPointF(point.x / unitsPerMm, point.y / unitsPerMm));
-                }
+                for (const auto& point : primitive.points) mm.push_back(toBoardMm(point));
                 addFace(bucket, mm, z, color, primitive.filled,
-                        std::max(primitive.strokeWidth * scale, 0.6), 0.0);
+                        std::max(primitive.strokeWidth / unitsPerMm * scale, 0.6), 0.0,
+                        sequence);
                 break;
             }
             case pcbv::RenderPrimitive::Kind::Line: {
@@ -1106,14 +1109,11 @@ void BoardView::paintThreeD(QPainter& painter) {
                 Item item;
                 item.filled = false;
                 item.line = true;
+                item.sequence = sequence;
                 item.color = color;
-                item.width = std::max(primitive.strokeWidth * scale, 0.7);
-                item.polygon << toScreen(project(QPointF(primitive.points[0].x / unitsPerMm,
-                                                         primitive.points[0].y / unitsPerMm),
-                                                 z, depthA));
-                item.polygon << toScreen(project(QPointF(primitive.points[1].x / unitsPerMm,
-                                                         primitive.points[1].y / unitsPerMm),
-                                                 z, depthB));
+                item.width = std::max(primitive.strokeWidth / unitsPerMm * scale, 0.7);
+                item.polygon << toScreen(project(toBoardMm(primitive.points[0]), z, depthA));
+                item.polygon << toScreen(project(toBoardMm(primitive.points[1]), z, depthB));
                 item.depth = (depthA + depthB) / 2.0;
                 bucket.push_back(item);
                 break;
@@ -1122,14 +1122,13 @@ void BoardView::paintThreeD(QPainter& painter) {
                 if (primitive.radius <= 0.0) break;
                 std::vector<QPointF> mm;
                 const double radiusMm = primitive.radius / unitsPerMm;
-                const QPointF centreMm(primitive.center.x / unitsPerMm,
-                                       primitive.center.y / unitsPerMm);
+                const QPointF centreMm = toBoardMm(primitive.center);
                 const int steps = 20;
                 for (int i = 0; i < steps; ++i) {
                     const double angle = 2.0 * kPi3D * i / steps;
                     mm.push_back(centreMm + QPointF(std::cos(angle), std::sin(angle)) * radiusMm);
                 }
-                addFace(bucket, mm, z, color, primitive.filled, 0.0, 0.0);
+                addFace(bucket, mm, z, color, primitive.filled, 0.0, 0.0, sequence);
                 break;
             }
             case pcbv::RenderPrimitive::Kind::Text: {
@@ -1137,10 +1136,10 @@ void BoardView::paintThreeD(QPainter& painter) {
                 double depth = 0.0;
                 Item item;
                 item.filled = false;
+                item.sequence = sequence;
                 item.color = color;
-                const QPointF anchor = toScreen(project(QPointF(primitive.x / unitsPerMm,
-                                                                primitive.y / unitsPerMm),
-                                                        z, depth));
+                const QPointF anchor =
+                    toScreen(project(toBoardMm(pcbv::Point{primitive.x, primitive.y}), z, depth));
                 item.depth = depth;
                 item.textPos = anchor;
                 item.text = QString::fromStdString(primitive.text);
@@ -1151,10 +1150,16 @@ void BoardView::paintThreeD(QPainter& painter) {
         }
     }
 
-    auto drawBucket = [&painter](std::vector<Item>& bucket) {
-        std::sort(bucket.begin(), bucket.end(), [](const Item& a, const Item& b) {
-            return a.depth > b.depth;  // far to near
-        });
+    auto drawBucket = [&painter](std::vector<Item>& bucket, bool byDepth = false) {
+        if (byDepth) {
+            std::sort(bucket.begin(), bucket.end(), [](const Item& a, const Item& b) {
+                return a.depth > b.depth;  // far to near
+            });
+        } else {
+            std::stable_sort(bucket.begin(), bucket.end(), [](const Item& a, const Item& b) {
+                return a.sequence < b.sequence;
+            });
+        }
         for (const auto& item : bucket) {
             if (!item.text.isEmpty()) {
                 QFont font = painter.font();
@@ -1192,7 +1197,7 @@ void BoardView::paintThreeD(QPainter& painter) {
     painter.setRenderHint(QPainter::Antialiasing, true);
     drawBucket(faceBottom);
     drawBucket(bottomItems);
-    drawBucket(wallItems);
+    drawBucket(wallItems, true);
     drawBucket(faceTop);
     drawBucket(topItems);
 
