@@ -1825,6 +1825,21 @@ void addBundlesIn(const std::filesystem::path& folder, std::vector<std::string>&
 
 } // namespace
 
+namespace {
+
+/// Folder the running executable lives in, so the library that ships with the viewer is
+/// found no matter where the user started it from.
+std::filesystem::path executableFolder() {
+#if defined(__linux__)
+    std::error_code error;
+    const std::filesystem::path self = std::filesystem::read_symlink("/proc/self/exe", error);
+    if (!error) return self.parent_path();
+#endif
+    return {};
+}
+
+} // namespace
+
 std::vector<std::string> findLibraryBundles(const std::string& boardPath) {
     std::vector<std::string> files;
     const std::filesystem::path board(boardPath);
@@ -1838,6 +1853,12 @@ std::vector<std::string> findLibraryBundles(const std::string& boardPath) {
     }
     std::error_code error;
     addBundlesIn(std::filesystem::current_path(error) / "library", files);
+    // build/pcbv-gui -> ../library, i.e. the library that is shipped in the repository.
+    const std::filesystem::path exeFolder = executableFolder();
+    if (!exeFolder.empty()) {
+        addBundlesIn(exeFolder / "library", files);
+        addBundlesIn(exeFolder / ".." / "library", files);
+    }
     if (const char* home = std::getenv("HOME")) {
         addBundlesIn(std::filesystem::path(home) / ".local/share/pcbv/library", files);
     }
