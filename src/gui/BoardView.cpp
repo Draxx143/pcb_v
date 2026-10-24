@@ -1039,12 +1039,12 @@ void BoardView::paintThreeD(QPainter& painter) {
 
     auto addFace = [&](std::vector<Item>& bucket, const std::vector<QPointF>& points, double z,
                        const QColor& color, bool filled, double width, double depthBias,
-                       int order = 0) {
+                       int sequence = 0) {
         Item item;
         item.filled = filled;
         item.color = color;
         item.width = width;
-        item.order = order;
+        item.sequence = sequence;
         double depthSum = 0.0;
         for (const auto& point : points) {
             double depth = 0.0;
