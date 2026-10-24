@@ -265,7 +265,17 @@ ls -lh ~/project_pcb_problem_finder/library
 
 ## ۵) تست کردن با فایل نمونه
 
-اگر هنوز فایل آلتیوم خودتان را ندارید:
+بدون هیچ فایلی، روی برد نمونهٔ خودِ مخزن امتحان کنید:
+
+```bash
+cd ~/project_pcb_problem_finder
+./build/pcbv-cli --3d ~/demo-3d.bmp examples/demo-board.PcbDoc
+```
+
+باید بنویسد `library: 8 part(s) matched` و `3D: 8 of 8 part(s) use a real model` (برد نمونه
+۸ قطعه با نام‌های آلتیومی `DPAK`/`DO41`/`AXIAL-0.4`/`CAP-8x12`/`LED5`/`HDR1X4`/`SOT23`/`SO8` دارد).
+
+اگر فایل آلتیوم خودتان را دارید، مسیرش را پیدا کنید:
 
 ```bash
 bash tests/fetch_samples.sh        # چند فایل نمونهٔ عمومی را در samples/ می‌گذارد
