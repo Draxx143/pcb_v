@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Packs the bundled part library into one zip that can be downloaded and unzipped.
 
-    python3 tools/pack_library.py            # -> dist/pcbv-library-<version>.zip
+    python3 tools/pack_library.py            # -> dist/project_pcb_problem_finder-library-<version>.zip
 
 The archive holds both bundles plus the credits/how-to text, so a user who only wants the
 library never needs to clone the repository.
@@ -28,7 +28,7 @@ def version() -> str:
 
 def main() -> int:
     os.makedirs(DIST, exist_ok=True)
-    target = os.path.join(DIST, f"pcbv-library-{version()}.zip")
+    target = os.path.join(DIST, f"project_pcb_problem_finder-library-{version()}.zip")
     missing = [name for name in FILES if not os.path.isfile(os.path.join(LIBRARY, name))]
     if missing:
         print(f"missing in library/: {', '.join(missing)}", file=sys.stderr)

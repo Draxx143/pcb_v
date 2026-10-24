@@ -9,7 +9,7 @@
 #     bash setup_linux.sh --run        build and start the GUI afterwards
 #     bash setup_linux.sh --desktop    also install a desktop menu entry
 #
-#  Run it from the repository root:  cd pcb_v && bash setup_linux.sh
+#  Run it from the repository root:  cd project_pcb_problem_finder && bash setup_linux.sh
 # ---------------------------------------------------------------------------
 set -uo pipefail
 

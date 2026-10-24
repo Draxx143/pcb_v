@@ -65,11 +65,29 @@
 
 پیش‌نیاز: فقط یک توزیع لینوکس با دسترسی `sudo`. بقیهٔ کارها خودکار است.
 
+نام پوشهٔ پروژه از این به بعد `project_pcb_problem_finder` است (مخزن روی GitHub همان
+`pcb_v` می‌ماند؛ فقط محلِ قرار گرفتن پوشه روی سیستم شما این اسم را دارد).
+
 ```bash
 cd ~
-git clone https://github.com/Draxx143/pcb_v.git
-cd pcb_v
+git clone https://github.com/Draxx143/pcb_v.git project_pcb_problem_finder
+cd project_pcb_problem_finder
 bash setup_linux.sh
+```
+
+اگر قبلاً پوشه را با نام قدیمی (`~/pcb_v`) گرفته‌اید، فقط اسمش را عوض کنید:
+
+```bash
+mv ~/pcb_v ~/project_pcb_problem_finder
+cd ~/project_pcb_problem_finder
+./run.sh                                   # مسیرها نسبی‌اند و چیزی خراب نمی‌شود
+```
+
+اگر با `--desktop` میان‌بر منو ساخته بودید، یک‌بار دیگر همان دستور را بزنید تا مسیر جدید
+در میان‌بر ثبت شود:
+
+```bash
+cd ~/project_pcb_problem_finder && bash setup_linux.sh --desktop
 ```
 
 اسکریپت به‌طور خودکار:
@@ -191,19 +209,28 @@ Datasheet, UniqueId, File`
 **دریافت کتابخانه**: فایل‌ها داخل خود مخزن هستند، پس با همان `git pull` می‌آیند:
 
 ```bash
-cd ~/pcb_v && git pull
+cd ~/project_pcb_problem_finder && git pull
 ls -lh library
 ```
 
 اگر مخزن را کلون نکرده‌اید، در صفحهٔ GitHub روی **Code → Download ZIP** بزنید و پوشهٔ
-`library/` را کنار برنامه بگذارید (همان دو فایل `.pcbvlib` کافی است). ساخت دوبارهٔ فایل zip
-از روی همین پوشه: `python3 tools/pack_library.py` که خروجی را در `dist/` می‌گذارد.
+`library/` را کنار برنامه بگذارید (همان دو فایل `.pcbvlib` کافی است). فایل zipِ آمادهٔ کتابخانه
+هم با همین نام پوشه ساخته می‌شود و داخلش `library/…` است:
+
+```bash
+mkdir -p ~/project_pcb_problem_finder
+unzip -o ~/Downloads/project_pcb_problem_finder-library.zip -d ~/project_pcb_problem_finder
+ls -lh ~/project_pcb_problem_finder/library
+```
+
+ساخت دوبارهٔ همان zip از روی پوشهٔ مخزن: `python3 tools/pack_library.py` که
+`dist/project_pcb_problem_finder-library-<version>.zip` را می‌سازد.
 
 **استفاده**: هیچ کاری لازم نیست. برنامه هنگام باز کردن هر برد، خودش `library/` را در این
 مسیرها می‌گردد و مدل‌ها را به قطعات وصل می‌کند:
 
 1. پوشهٔ خودِ برد، 2. `<پوشهٔ برد>/library`، 3. `$PCBV_LIBRARY`، 4. `./library`،
-5. پوشهٔ `library` کنار فایل اجرایی (یعنی `~/pcb_v/library`)، 6. `~/.local/share/pcbv/library`.
+5. پوشهٔ `library` کنار فایل اجرایی (یعنی `~/project_pcb_problem_finder/library`)، 6. `~/.local/share/pcbv/library`.
 
 اتصال مدل‌ها **بدون حدس** انجام می‌شود: اول نام فوت‌پرینت (بی‌توجه به حروف بزرگ/کوچک و
 جداکننده‌ها) و اثر انگشت پدها (تعداد پد، ابعاد، سوراخ) مقایسه می‌شود؛ تطابق هندسی فقط وقتی
@@ -214,13 +241,13 @@ ls -lh library
 فهرست و لینک دیتاشیت‌ها را همیشه می‌شود از خود فایل گرفت:
 
 ```bash
-./build/pcbv-cli --lib ~/pcb_v/library/pcbv-starter.pcbvlib
+./build/pcbv-cli --lib ~/project_pcb_problem_finder/library/pcbv-starter.pcbvlib
 ```
 
 خروجی سه‌بعدی با مدل واقعی (مسیر برد خودتان را بگذارید):
 
 ```bash
-./build/pcbv-cli --3d ~/board-3d.bmp ~/pcb_v/samples/board.PcbDoc   # library/ خودکار پیدا می‌شود
+./build/pcbv-cli --3d ~/board-3d.bmp ~/project_pcb_problem_finder/samples/board.PcbDoc   # library/ خودکار پیدا می‌شود
 ```
 
 فوت‌پرینت‌ها از `kicad-footprints` و بدنه‌ها از `kicad-packages3D` (هر دو CC-BY-SA 4.0،
@@ -253,7 +280,7 @@ cd build && ctest --output-on-failure
 ## ۶) ساختار پروژه
 
 ```
-pcb_v/
+project_pcb_problem_finder/      (همان مخزن pcb_v)
 ├── CMakeLists.txt          ساخت با CMake (CLI همیشه، GUI در صورت وجود Qt6)
 ├── setup_linux.sh          نصب وابستگی‌ها + کامپایل (یک‌مرحله‌ای)
 ├── run.sh                  اجرای برنامه
