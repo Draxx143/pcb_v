@@ -15,6 +15,7 @@
 #include "core/Bom.h"
 #include "core/Compare.h"
 #include "core/Netlist.h"
+#include "core/Recent.h"
 #include "core/Export.h"
 
 namespace {
@@ -141,6 +142,23 @@ void selfTest() {
             check(u1.partNumber == "NE555P", "ASCII schematic parameter read");
         }
         std::remove(schPath.c_str());
+    }
+
+    // --- recent files list --------------------------------------------------
+    {
+        auto list = pcbv::pushRecent({}, "/a.PcbDoc");
+        check(list.size() == 1 && list.front() == "/a.PcbDoc", "recent: the first file is remembered");
+        list = pcbv::pushRecent(list, "/b.PcbDoc");
+        check(list.size() == 2 && list[0] == "/b.PcbDoc", "recent: the newest file goes first");
+        list = pcbv::pushRecent(list, "/a.PcbDoc");
+        check(list.size() == 2 && list[0] == "/a.PcbDoc" && list[1] == "/b.PcbDoc",
+              "recent: reopening a file moves it up instead of duplicating it");
+        check(pcbv::pushRecent(list, "").size() == 2, "recent: an empty path is ignored");
+        std::vector<std::string> longList;
+        for (int i = 0; i < 14; ++i) longList.push_back("/f" + std::to_string(i) + ".PcbDoc");
+        const auto trimmed = pcbv::pushRecent(longList, "/new.PcbDoc", 10);
+        check(trimmed.size() == 10 && trimmed.front() == "/new.PcbDoc",
+              "recent: the list never grows past ten entries");
     }
 
     // --- grouped BOM and revision comparison --------------------------------

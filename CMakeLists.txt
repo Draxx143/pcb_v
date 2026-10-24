@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(PcbAiViewer VERSION 0.9.0 LANGUAGES CXX)
+project(PcbAiViewer VERSION 0.10.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -39,6 +39,8 @@ add_library(pcbv_core STATIC
     src/core/Model.h
     src/core/Netlist.cpp
     src/core/Netlist.h
+    src/core/Recent.cpp
+    src/core/Recent.h
 )
 target_include_directories(pcbv_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
@@ -72,6 +74,7 @@ if(PCBV_BUILD_GUI)
         )
         target_link_libraries(pcbv-gui PRIVATE pcbv_core Qt6::Core Qt6::Gui Qt6::Widgets
                                                  Qt6::PrintSupport)
+        target_compile_definitions(pcbv-gui PRIVATE PCBV_VERSION="${PROJECT_VERSION}")
         message(STATUS "Qt ${Qt6_VERSION} found — building pcbv-gui (1:1 printing enabled)")
     else()
         message(WARNING

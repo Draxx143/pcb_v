@@ -58,6 +58,7 @@
 #include <cstdint>
 #include <map>
 #include <set>
+#include <utility>
 
 #include "BoardView.h"
 #include "Icons.h"
@@ -66,6 +67,7 @@
 #include "core/Bom.h"
 #include "core/Export.h"
 #include "core/Netlist.h"
+#include "core/Recent.h"
 
 namespace {
 
@@ -136,6 +138,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     if (!geometry.isEmpty()) restoreGeometry(geometry);
     const QByteArray state = settings.value(QStringLiteral("ui/windowState")).toByteArray();
     if (!state.isEmpty()) restoreState(state);
+
+    // Bring back the documents that were open when the app was closed.
+    restoreSession();
 }
 
 // ---------------------------------------------------------------------------
@@ -389,6 +394,12 @@ void MainWindow::createMenus() {
     // File: open, one export submenu, quit.
     QMenu* fileMenu = menuBar()->addMenu(tr("&File"));
     fileMenu->addAction(openAction_);
+    recentMenu_ = fileMenu->addMenu(tr("Open &recent"));
+    recentMenu_->setToolTipsVisible(true);
+    // The list changes while the app runs, so it is rebuilt each time the menu opens.
+    connect(recentMenu_, &QMenu::aboutToShow, this, &MainWindow::rebuildRecentMenu);
+    rebuildRecentMenu();
+    fileMenu->addSeparator();
     fileMenu->addAction(closeAction_);
     fileMenu->addAction(closeAllAction_);
     fileMenu->addSeparator();
@@ -1165,22 +1176,33 @@ void MainWindow::openFileDialog() {
 }
 
 void MainWindow::openDocument(const QString& path) {
+    const bool quiet = restoringSession_;  // silent reopen: no modal dialogs at start-up
     const QFileInfo info(path);
     if (!info.exists() || !info.isFile()) {
+        if (quiet) {
+            log(tr("warning: %1 is no longer there — skipped").arg(path));
+            return;
+        }
         QMessageBox::warning(this, tr("Open document"),
                              tr("File not found:\n%1").arg(path));
         return;
     }
     const pcbv::DocType type = pcbv::detectType(path.toStdString());
     if (type == pcbv::DocType::PcbLib || type == pcbv::DocType::SchLib) {
-        QMessageBox::information(this, tr("Not supported yet"),
-                                 tr("%1\n\nLibrary files (.PcbLib/.SchLib) are planned for a later "
-                                    "step. Please open a .PcbDoc or .SchDoc.").arg(info.fileName()));
+        if (!quiet) {
+            QMessageBox::information(
+                this, tr("Not supported yet"),
+                tr("%1\n\nLibrary files (.PcbLib/.SchLib) are planned for a later "
+                   "step. Please open a .PcbDoc or .SchDoc.").arg(info.fileName()));
+        }
         return;
     }
     if (type == pcbv::DocType::Unknown) {
-        QMessageBox::warning(this, tr("Unknown file type"),
-                             tr("%1\n\nExpected an Altium .PcbDoc or .SchDoc file.").arg(info.fileName()));
+        if (!quiet) {
+            QMessageBox::warning(this, tr("Unknown file type"),
+                                 tr("%1\n\nExpected an Altium .PcbDoc or .SchDoc file.")
+                                     .arg(info.fileName()));
+        }
         return;
     }
 
@@ -1194,23 +1216,27 @@ void MainWindow::openDocument(const QString& path) {
             details += tr("\n\nDetected: %1").arg(qs(outcome.detected));
         if (!outcome.signature.empty())
             details += tr("\nFirst bytes: %1").arg(qs(outcome.signature));
-        QMessageBox box(this);
-        box.setIcon(QMessageBox::Critical);
-        box.setWindowTitle(tr("Cannot read document"));
-        box.setText(tr("%1 could not be opened.").arg(info.fileName()));
-        box.setInformativeText(details);
-        if (!outcome.detected.empty())
-            box.setDetailedText(tr("File: %1\nSize: %2 bytes\nDetected: %3\nSignature: %4\n\n%5")
-                                    .arg(info.absoluteFilePath())
-                                    .arg(info.size())
-                                    .arg(qs(outcome.detected), qs(outcome.signature), qs(outcome.error)));
-        box.exec();
+        if (!quiet) {
+            QMessageBox box(this);
+            box.setIcon(QMessageBox::Critical);
+            box.setWindowTitle(tr("Cannot read document"));
+            box.setText(tr("%1 could not be opened.").arg(info.fileName()));
+            box.setInformativeText(details);
+            if (!outcome.detected.empty())
+                box.setDetailedText(
+                    tr("File: %1\nSize: %2 bytes\nDetected: %3\nSignature: %4\n\n%5")
+                        .arg(info.absoluteFilePath())
+                        .arg(info.size())
+                        .arg(qs(outcome.detected), qs(outcome.signature), qs(outcome.error)));
+            box.exec();
+        }
         log(tr("ERROR  %1 — %2").arg(info.fileName(), qs(outcome.error)));
         if (!outcome.detected.empty()) log(tr("       detected: %1").arg(qs(outcome.detected)));
         return;
     }
     // Already open? Bring that tab forward instead of loading the file twice.
     const QString absolute = info.absoluteFilePath();
+    rememberRecent(absolute);
     for (std::size_t i = 0; i < slots_.size(); ++i) {
         if (slots_[i].path == absolute) {
             activateDocument(static_cast<int>(i));
@@ -1299,6 +1325,120 @@ void MainWindow::setDocument(const pcbv::Document& document) {
     statusBar()->showMessage(tr("%1  ·  %2").arg(qs(document_.fileName),
                                                  qs(pcbv::docTypeName(document_.type))));
     updateActionStates();
+}
+
+// ---------------------------------------------------------------------------
+// Recent files and the last session
+// ---------------------------------------------------------------------------
+
+void MainWindow::rememberRecent(const QString& path) {
+    const QString absolute = QFileInfo(path).absoluteFilePath();
+    if (absolute.isEmpty() || !QFileInfo::exists(absolute)) return;
+
+    std::vector<std::string> stored;
+    stored.reserve(static_cast<std::size_t>(recentFiles_.size()));
+    for (const QString& entry : recentFiles_) stored.push_back(entry.toStdString());
+
+    stored = pcbv::pushRecent(std::move(stored), absolute.toStdString(), 10);
+
+    recentFiles_.clear();
+    for (const std::string& entry : stored) recentFiles_.append(qs(entry));
+
+    QSettings settings;
+    settings.setValue(QStringLiteral("files/recent"), recentFiles_);
+    // The menu is rebuilt when it opens; it only has to become reachable again.
+    if (recentMenu_ != nullptr) recentMenu_->setEnabled(true);
+}
+
+void MainWindow::rebuildRecentMenu() {
+    if (recentMenu_ == nullptr) return;
+
+    QSettings settings;
+    recentFiles_ = settings.value(QStringLiteral("files/recent")).toStringList();
+
+    // Files that were moved or deleted since they were remembered drop out silently.
+    QStringList alive;
+    for (const QString& path : recentFiles_) {
+        if (QFileInfo::exists(path)) alive.append(path);
+    }
+    if (alive != recentFiles_) {
+        recentFiles_ = alive;
+        settings.setValue(QStringLiteral("files/recent"), recentFiles_);
+    }
+
+    recentMenu_->clear();
+    int number = 1;
+    for (const QString& path : recentFiles_) {
+        const QString label = QStringLiteral("&%1  %2").arg(number).arg(QFileInfo(path).fileName());
+        QAction* entry = recentMenu_->addAction(label);
+        entry->setToolTip(path);
+        entry->setStatusTip(path);
+        // Open from the event loop instead of inside the menu: opening reorders the list and
+        // rebuilds this very menu, which must not happen while the action is being emitted.
+        connect(entry, &QAction::triggered, this, [this, path]() {
+            QMetaObject::invokeMethod(this, [this, path]() { openDocument(path); },
+                                      Qt::QueuedConnection);
+        });
+        if (++number > 10) break;
+    }
+
+    if (recentFiles_.isEmpty()) {
+        QAction* empty = recentMenu_->addAction(tr("(nothing yet)"));
+        empty->setEnabled(false);
+        recentMenu_->setEnabled(false);
+        return;
+    }
+    recentMenu_->setEnabled(true);
+    recentMenu_->addSeparator();
+    QAction* clear = recentMenu_->addAction(tr("Clear the &list"));
+    connect(clear, &QAction::triggered, this, [this]() {
+        QMetaObject::invokeMethod(this, [this]() {
+            recentFiles_.clear();
+            QSettings().remove(QStringLiteral("files/recent"));
+            rebuildRecentMenu();
+        }, Qt::QueuedConnection);
+    });
+}
+
+void MainWindow::restoreSession() {
+    QSettings settings;
+    const QStringList files = settings.value(QStringLiteral("session/open")).toStringList();
+    if (files.isEmpty()) return;
+
+    const int wantedIndex = settings.value(QStringLiteral("session/active"), 0).toInt();
+    const QString wanted =
+        wantedIndex >= 0 && wantedIndex < files.size()
+            ? QFileInfo(files.at(wantedIndex)).absoluteFilePath()
+            : QString();
+
+    restoringSession_ = true;
+    QStringList reopened;
+    for (const QString& path : files) {
+        if (path.isEmpty() || !QFileInfo::exists(path)) continue;
+        const int before = static_cast<int>(slots_.size());
+        openDocument(path);
+        if (static_cast<int>(slots_.size()) > before)
+            reopened.append(QFileInfo(path).absoluteFilePath());
+    }
+    restoringSession_ = false;
+
+    if (reopened.isEmpty()) return;
+    const int wantedSlot = reopened.indexOf(wanted);
+    if (wantedSlot > 0) activateDocument(wantedSlot);
+    log(tr("Reopened %1 document(s) from the last session.").arg(reopened.size()));
+}
+
+void MainWindow::saveSession() {
+    QStringList open;
+    for (const DocumentSlot& slot : slots_) open.append(slot.path);
+    QSettings settings;
+    if (open.isEmpty()) {
+        settings.remove(QStringLiteral("session/open"));
+        settings.remove(QStringLiteral("session/active"));
+        return;
+    }
+    settings.setValue(QStringLiteral("session/open"), open);
+    settings.setValue(QStringLiteral("session/active"), active_);
 }
 
 // ---------------------------------------------------------------------------
@@ -2190,6 +2330,7 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     settings.setValue(QStringLiteral("ui/geometry"), saveGeometry());
     settings.setValue(QStringLiteral("ui/windowState"), saveState());
     settings.setValue(QStringLiteral("ui/lastDirectory"), lastDirectory_);
+    saveSession();
     QMainWindow::closeEvent(event);
 }
 

@@ -6,12 +6,16 @@
 #include "Icons.h"
 #include "MainWindow.h"
 
+#ifndef PCBV_VERSION
+#define PCBV_VERSION "dev"
+#endif
+
 int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("pcb-viewer"));  // settings / config path
     app.setApplicationDisplayName(QStringLiteral("PCB Viewer"));
     app.setOrganizationName(QStringLiteral("pcbv"));
-    app.setApplicationVersion(QStringLiteral("0.3.0"));
+    app.setApplicationVersion(QStringLiteral(PCBV_VERSION));
     // Wayland/X11 dock icon: matches the .desktop file written by setup_linux.sh.
     app.setDesktopFileName(QStringLiteral("pcb-viewer"));
     app.setWindowIcon(pcbv::gui::appIcon());

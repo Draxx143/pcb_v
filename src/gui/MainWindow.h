@@ -4,6 +4,7 @@
 #include <QMainWindow>
 #include <QPointF>
 #include <QString>
+#include <QStringList>
 
 #include <vector>
 
@@ -23,6 +24,7 @@ class QPlainTextEdit;
 class QDockWidget;
 class QLabel;
 class QTabWidget;
+class QMenu;
 class QTabBar;
 class QToolBar;
 
@@ -111,6 +113,10 @@ private:
     void restoreViewState();
     void clearDocument();
     void updateDocumentTitle();
+    void rememberRecent(const QString& path);
+    void rebuildRecentMenu();
+    void restoreSession();
+    void saveSession();
     void ensureDocumentLoaded();
     void updateActionStates();
     QString componentDetailsHtml(const pcbv::Component& component) const;
@@ -123,6 +129,9 @@ private:
     int active_ = -1;
     QTabBar* docTabs_ = nullptr;
     bool switching_ = false;
+    bool restoringSession_ = false;   ///< reopening last session: stay quiet on errors
+    QStringList recentFiles_;         ///< most recently opened first
+    QMenu* recentMenu_ = nullptr;
 
     QTabWidget* tabs_ = nullptr;
     BoardView* boardView_ = nullptr;
