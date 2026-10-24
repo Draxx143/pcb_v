@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(PcbAiViewer VERSION 0.13.0 LANGUAGES CXX)
+project(PcbAiViewer VERSION 0.14.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,6 +38,10 @@ add_library(pcbv_core STATIC
     src/core/Library.h
     src/core/Export.cpp
     src/core/Export.h
+    src/core/Inflate.cpp
+    src/core/Inflate.h
+    src/core/Step.cpp
+    src/core/Step.h
     src/core/Model.h
     src/core/Netlist.cpp
     src/core/Netlist.h

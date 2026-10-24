@@ -6,6 +6,8 @@
 // anti-aliasing.
 #include "ThreeD.h"
 
+#include "Step.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -532,6 +534,132 @@ BodyPlan planBody(const Component& component) {
     return plan;
 }
 
+// ---------------------------------------------------------------------------
+// Real 3D models
+// ---------------------------------------------------------------------------
+//
+// A component whose footprint came with a 3D model (Attachment "MODELID={…}" in the
+// library, the STEP file itself in the library's "Models" storage) is drawn from that
+// triangle mesh. The transformation is the one Altium itself applies:
+//   * ROTX / ROTY / ROTZ of the model record rotate the model into the footprint frame,
+//   * the model is then centred on the component origin and rested on the board surface,
+//   * DZ lifts it by the offset stored with the model,
+//   * the component rotation turns it on the board, exactly like the pads beside it.
+struct PlacedModel {
+    std::vector<StepTriangle> triangles;   ///< in the component frame (mm, Z = 0 on the board)
+    double minX = 0.0, maxX = 0.0, minY = 0.0, maxY = 0.0;
+    double height = 0.0;
+    bool hasColor = false;                 ///< the model declared its own colour
+    double colorR = 0.5, colorG = 0.5, colorB = 0.5;
+    bool valid() const { return !triangles.empty(); }
+};
+
+void rotatePoint(double& x, double& y, double& z, const EmbeddedModel& model) {
+    const double rx = model.rotationX * kPi / 180.0;
+    const double ry = model.rotationY * kPi / 180.0;
+    const double rz = model.rotationZ * kPi / 180.0;
+    // X
+    {
+        const double c = std::cos(rx), s = std::sin(rx);
+        const double ny = y * c - z * s;
+        const double nz = y * s + z * c;
+        y = ny;
+        z = nz;
+    }
+    // Y
+    {
+        const double c = std::cos(ry), s = std::sin(ry);
+        const double nx = x * c + z * s;
+        const double nz = -x * s + z * c;
+        x = nx;
+        z = nz;
+    }
+    // Z
+    {
+        const double c = std::cos(rz), s = std::sin(rz);
+        const double nx = x * c - y * s;
+        const double ny = x * s + y * c;
+        x = nx;
+        y = ny;
+    }
+}
+
+/// Rotates, centres and rests a STEP mesh: the result sits on Z = 0 with its bounding box
+/// centred on the origin, ready to be dropped on a component.
+PlacedModel placeModel(const StepMesh& mesh, const EmbeddedModel& model) {
+    PlacedModel placed;
+    if (!mesh.valid()) return placed;
+
+    std::vector<StepTriangle> rotated = mesh.triangles;
+    double minX = 1e18, minY = 1e18, minZ = 1e18;
+    double maxX = -1e18, maxY = -1e18, maxZ = -1e18;
+    for (StepTriangle& triangle : rotated) {
+        for (double* point : {triangle.a, triangle.b, triangle.c}) {
+            rotatePoint(point[0], point[1], point[2], model);
+            minX = std::min(minX, point[0]);
+            maxX = std::max(maxX, point[0]);
+            minY = std::min(minY, point[1]);
+            maxY = std::max(maxY, point[1]);
+            minZ = std::min(minZ, point[2]);
+            maxZ = std::max(maxZ, point[2]);
+        }
+    }
+    const double cx = (minX + maxX) / 2.0;
+    const double cy = (minY + maxY) / 2.0;
+    for (StepTriangle& triangle : rotated) {
+        for (double* point : {triangle.a, triangle.b, triangle.c}) {
+            point[0] -= cx;
+            point[1] -= cy;
+            point[2] -= minZ;
+        }
+    }
+    placed.minX = -(maxX - minX) / 2.0;
+    placed.maxX = (maxX - minX) / 2.0;
+    placed.minY = -(maxY - minY) / 2.0;
+    placed.maxY = (maxY - minY) / 2.0;
+    placed.height = std::max(maxZ - minZ, 0.01);
+    placed.hasColor = mesh.hasColor;
+    placed.colorR = mesh.colorR;
+    placed.colorG = mesh.colorG;
+    placed.colorB = mesh.colorB;
+    placed.triangles = std::move(rotated);
+    return placed;
+}
+
+/// Parsing a 50 kB STEP file costs tens of milliseconds, and the preview re-renders while
+/// the user drags the board, so decoded models are kept for the rest of the session.
+const PlacedModel* modelFor(const Document& document, int index) {
+    if (index < 0 || index >= static_cast<int>(document.models.size())) return nullptr;
+    const EmbeddedModel& model = document.models[static_cast<std::size_t>(index)];
+    if (model.stepText.empty()) return nullptr;
+
+    std::uint64_t key = 1469598103934665603ull;
+    auto mix = [&key](const void* data, std::size_t size) {
+        const auto* bytes = static_cast<const unsigned char*>(data);
+        for (std::size_t i = 0; i < size; ++i) {
+            key ^= bytes[i];
+            key *= 1099511628211ull;
+        }
+    };
+    mix(model.stepText.data(), model.stepText.size());
+    mix(&model.rotationX, sizeof(model.rotationX));
+    mix(&model.rotationY, sizeof(model.rotationY));
+    mix(&model.rotationZ, sizeof(model.rotationZ));
+
+    static std::vector<std::pair<std::uint64_t, PlacedModel>> cache;
+    for (const auto& entry : cache) {
+        if (entry.first == key) return entry.second.valid() ? &entry.second : nullptr;
+    }
+    if (cache.size() > 32) cache.erase(cache.begin(), cache.begin() + 8);
+
+    PlacedModel placed;
+    StepMesh mesh;
+    std::string error;
+    if (parseStepMesh(model.stepText, mesh, &error)) placed = placeModel(mesh, model);
+    cache.emplace_back(key, std::move(placed));
+    return cache.back().second.valid() ? &cache.back().second : nullptr;
+}
+
 BoardFrame boardFrame(const Document& document) {
     BoardFrame frame;
     double minX = 1e18, maxX = -1e18, minY = 1e18, maxY = -1e18;
@@ -768,16 +896,53 @@ ThreeDImage render3D(const Document& document, const BoardRenderOptions& options
         if (onBottom && options.isHidden(32)) continue;
         if (!onBottom && options.isHidden(1)) continue;
 
+        // The real model when the footprint brought one, a plan body otherwise.
+        const PlacedModel* placed = modelFor(document, component.modelIndex);
         const BodyPlan plan = planBody(component);
         const auto centre = frame.toMm(component.x, component.y);
         const double baseZ = onBottom ? bottomZ : topZ;
-        const double bodyZ = onBottom ? baseZ - plan.height : baseZ + plan.height;
+        double height = plan.height;
+        double minX = plan.minX, maxX = plan.maxX, minY = plan.minY, maxY = plan.maxY;
+        if (placed != nullptr) {
+            height = placed->height;
+            minX = placed->minX;
+            maxX = placed->maxX;
+            minY = placed->minY;
+            maxY = placed->maxY;
+        }
+        const double bodyZ = onBottom ? baseZ - height : baseZ + height;
         const double sign = onBottom ? -1.0 : 1.0;
 
         const std::uint32_t bodyTop = palette.body;
         const std::uint32_t bodySide = palette.bodySide;
 
-        if (plan.cylinder) {
+        if (placed != nullptr) {
+            // Rotate the STEP mesh onto the board exactly like the pads around it.
+            const double rad = component.rotation * kPi / 180.0;
+            const double c = std::cos(rad), s = std::sin(rad);
+            auto toWorld = [&](const double* point) {
+                return Vec3{centre.first + point[0] * c - point[1] * s,
+                            centre.second + point[0] * s + point[1] * c,
+                            baseZ + sign * (point[2] + document.models[component.modelIndex].dz)};
+            };
+            std::uint32_t colour = palette.body;
+            double metal = 0.10;
+            if (placed->hasColor) {
+                const int r = static_cast<int>(std::clamp(placed->colorR, 0.0, 1.0) * 255.0 + 0.5);
+                const int g = static_cast<int>(std::clamp(placed->colorG, 0.0, 1.0) * 255.0 + 0.5);
+                const int b = static_cast<int>(std::clamp(placed->colorB, 0.0, 1.0) * 255.0 + 0.5);
+                colour = (static_cast<std::uint32_t>(r) << 16) | (static_cast<std::uint32_t>(g) << 8) |
+                         static_cast<std::uint32_t>(b);
+                const double brightness = (placed->colorR + placed->colorG + placed->colorB) / 3.0;
+                const double spread = std::max({placed->colorR, placed->colorG, placed->colorB}) -
+                                      std::min({placed->colorR, placed->colorG, placed->colorB});
+                metal = (spread < 0.12 && brightness > 0.45) ? 0.55 : 0.10;   // metal can / tab
+            }
+            for (const StepTriangle& triangle : placed->triangles) {
+                scene.addPolygon({toWorld(triangle.a), toWorld(triangle.b), toWorld(triangle.c)},
+                                 colour, metal);
+            }
+        } else if (plan.cylinder) {
             scene.addCylinder(centre.first, centre.second, plan.radius, baseZ, bodyZ, 24,
                               scaleColor(palette.metal, 0.92), scaleColor(palette.metal, 0.70),
                               bodySide, 0.25);
@@ -840,14 +1005,14 @@ ThreeDImage render3D(const Document& document, const BoardRenderOptions& options
 
         // Contact shadow: the body footprint dropped on the board along the light.
         if (view.shadows) {
-            const double drop = plan.height + 0.02;
+            const double drop = height + 0.02;
             const double dx = -light.x / std::max(light.z, 0.2) * drop;
             const double dy = -light.y / std::max(light.z, 0.2) * drop;
             const double rad = component.rotation * kPi / 180.0;
             const double c = std::cos(rad), s = std::sin(rad);
             std::vector<Vec3> shadow;
-            for (const Vec2& local : {Vec2{plan.minX, plan.minY}, Vec2{plan.maxX, plan.minY},
-                                      Vec2{plan.maxX, plan.maxY}, Vec2{plan.minX, plan.maxY}}) {
+            for (const Vec2& local : {Vec2{minX, minY}, Vec2{maxX, minY},
+                                      Vec2{maxX, maxY}, Vec2{minX, maxY}}) {
                 shadow.push_back(Vec3{centre.first + local.x * c - local.y * s + dx,
                                       centre.second + local.x * s + local.y * c + dy,
                                       onBottom ? bottomZ - 0.004 : topZ + 0.004});
@@ -899,8 +1064,15 @@ ThreeDImage render3D(const Document& document, const BoardRenderOptions& options
         for (const Component& component : document.components) {
             if (component.designator.empty()) continue;
             const auto centre = frame.toMm(component.x, component.y);
+            // The designator sits on top of the body, not on the board under it, so a tall
+            // part never swallows its own label.
+            const PlacedModel* model = modelFor(document, component.modelIndex);
+            const double bodyHeight = model != nullptr ? model->height : planBody(component).height;
+            const bool onBottom = component.layer.find("BOTTOM") != std::string::npos ||
+                                  component.layer.find("Bottom") != std::string::npos;
+            const double labelZ = onBottom ? bottomZ - bodyHeight - 0.2 : topZ + bodyHeight + 0.2;
             double depth = 0.0;
-            const Vec2 projected = camera.project(Vec3{centre.first, centre.second, topZ}, depth);
+            const Vec2 projected = camera.project(Vec3{centre.first, centre.second, labelZ}, depth);
             ThreeDLabel label;
             label.x = projected.x / factor;
             label.y = projected.y / factor;

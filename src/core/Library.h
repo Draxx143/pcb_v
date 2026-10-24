@@ -32,6 +32,7 @@ struct LibraryFootprint {
     int regionCount = 0;
     int textCount = 0;
     int bodyCount = 0;
+    std::vector<EmbeddedModel> models;   ///< real 3D models (STEP), when the library has them
 };
 
 /// One drawing primitive of a schematic symbol (Altium RECORD 6/8/10/12/13/14/28).
@@ -123,6 +124,15 @@ namespace detail {
 /// with a per-layer sub-record whose size must be consumed even when it is zero.
 bool parsePadRecord(const std::vector<std::uint8_t>& data, std::size_t& pos, Pad& pad);
 } // namespace detail
+
+/// Copies the real 3D models of the matching footprints onto the document's components.
+/// A component is matched to a footprint by its pattern name (exact after normalising case
+/// and punctuation, then a unique partial match). Returns how many components got a model.
+std::size_t attachModels(Document& document, const Library& library);
+
+/// Reads a library file and attaches whatever 3D models it has to `document`.
+std::size_t attachModelsFromFile(Document& document, const std::string& libraryPath,
+                                 std::string* error = nullptr);
 
 /// One-line summary, e.g. "PcbLib · 12 footprints · 0 symbols".
 std::string librarySummary(const Library& library);

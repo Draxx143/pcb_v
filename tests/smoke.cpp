@@ -22,6 +22,7 @@
 #include "core/Search.h"
 #include "core/ThreeD.h"
 #include "core/Export.h"
+#include "core/Step.h"
 
 namespace {
 
@@ -34,6 +35,108 @@ void check(bool condition, const std::string& what) {
         std::printf("  [FAIL] %s\n", what.c_str());
         ++g_failures;
     }
+}
+
+/// A minimal but complete STEP file: a closed box of `w` x `d` x `h` millimetres, built
+/// from planar faces bounded by straight edges. This is the same shape a real component
+/// model is made of, and the reader has to turn it into triangles without any vendor file.
+std::string boxStep(double w, double d, double h) {
+    const double hx = w / 2.0, hy = d / 2.0;
+    // 8 corners: 0..3 bottom (z = 0), 4..7 top (z = h).
+    const double corners[8][3] = {{-hx, -hy, 0.0}, {hx, -hy, 0.0}, {hx, hy, 0.0}, {-hx, hy, 0.0},
+                                  {-hx, -hy, h},   {hx, -hy, h},   {hx, hy, h},   {-hx, hy, h}};
+    const int faces[6][4] = {{0, 3, 2, 1}, {4, 5, 6, 7}, {0, 1, 5, 4},
+                             {1, 2, 6, 5}, {2, 3, 7, 6}, {3, 0, 4, 7}};
+
+    auto num = [](double value) {
+        char buffer[32];
+        std::snprintf(buffer, sizeof(buffer), "%.4f", value);
+        return std::string(buffer);
+    };
+
+    std::string text = "ISO-10303-21;\nHEADER;ENDSEC;\nDATA;\n";
+    int next = 1;
+    int pointId[8] = {}, vertexId[8] = {};
+    for (int i = 0; i < 8; ++i) {
+        text += "#" + std::to_string(next) + "=CARTESIAN_POINT('',(" + num(corners[i][0]) + "," +
+                num(corners[i][1]) + "," + num(corners[i][2]) + "));\n";
+        pointId[i] = next++;
+    }
+    for (int i = 0; i < 8; ++i) {
+        text += "#" + std::to_string(next) + "=VERTEX_POINT('',#" + std::to_string(pointId[i]) +
+                ");\n";
+        vertexId[i] = next++;
+    }
+    // The reader only needs the two end points of a straight edge, so one LINE is enough.
+    text += "#" + std::to_string(next) + "=DIRECTION('',(1.0,0.0,0.0));\n";
+    const int lineDir = next++;
+    text += "#" + std::to_string(next) + "=VECTOR('',#" + std::to_string(lineDir) + ",1.0);\n";
+    const int lineVector = next++;
+    text += "#" + std::to_string(next) + "=LINE('',#" + std::to_string(pointId[0]) + ",#" +
+            std::to_string(lineVector) + ");\n";
+    const int lineId = next++;
+
+    std::vector<int> faceIds;
+    for (int f = 0; f < 6; ++f) {
+        std::vector<int> oriented;
+        for (int corner = 0; corner < 4; ++corner) {
+            const int from = faces[f][corner];
+            const int to = faces[f][(corner + 1) % 4];
+            text += "#" + std::to_string(next) + "=EDGE_CURVE('',#" + std::to_string(vertexId[from]) +
+                    ",#" + std::to_string(vertexId[to]) + ",#" + std::to_string(lineId) + ",.T.);\n";
+            const int edge = next++;
+            text += "#" + std::to_string(next) + "=ORIENTED_EDGE('',*,*,#" + std::to_string(edge) +
+                    ",.T.);\n";
+            oriented.push_back(next++);
+        }
+        std::string loop;
+        for (const int edge : oriented) loop += "#" + std::to_string(edge) + ",";
+        loop.pop_back();
+        text += "#" + std::to_string(next) + "=EDGE_LOOP('',(" + loop + "));\n";
+        const int loopId = next++;
+        text += "#" + std::to_string(next) + "=FACE_OUTER_BOUND('',#" + std::to_string(loopId) +
+                ",.T.);\n";
+        const int boundId = next++;
+        // A plane needs its own normal, otherwise a vertical face projects to a line.
+        const double* a = corners[faces[f][0]];
+        const double* b = corners[faces[f][1]];
+        const double* c = corners[faces[f][2]];
+        const double ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+        const double vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+        double nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+        const double len = std::sqrt(nx * nx + ny * ny + nz * nz);
+        if (len > 1e-9) { nx /= len; ny /= len; nz /= len; }
+        text += "#" + std::to_string(next) + "=DIRECTION('',(" + num(nx) + "," + num(ny) + "," +
+                num(nz) + "));\n";
+        const int normalId = next++;
+        // The reference direction only has to be non parallel to the normal.
+        const char* reference = std::fabs(nx) > 0.9 ? "(0.0,1.0,0.0)" : "(1.0,0.0,0.0)";
+        text += "#" + std::to_string(next) + "=DIRECTION(''," + reference + ");\n";
+        const int referenceId = next++;
+        text += "#" + std::to_string(next) + "=AXIS2_PLACEMENT_3D('',#" +
+                std::to_string(pointId[faces[f][0]]) + ",#" + std::to_string(normalId) + ",#" +
+                std::to_string(referenceId) + ");\n";
+        const int placementId = next++;
+        text += "#" + std::to_string(next) + "=PLANE('',#" + std::to_string(placementId) + ");\n";
+        const int planeId = next++;
+        text += "#" + std::to_string(next) + "=ADVANCED_FACE('',(#" + std::to_string(boundId) +
+                "),#" + std::to_string(planeId) + ",.T.);\n";
+        faceIds.push_back(next++);
+    }
+    std::string shell;
+    for (const int face : faceIds) shell += "#" + std::to_string(face) + ",";
+    shell.pop_back();
+    text += "#" + std::to_string(next) + "=CLOSED_SHELL('',(" + shell + "));\n";
+    const int shellId = next++;
+    text += "#" + std::to_string(next) + "=MANIFOLD_SOLID_BREP('body',#" + std::to_string(shellId) +
+            ");\n";
+    ++next;
+    // Two colours, the way a real package declares a bright lead frame and a dark body.
+    text += "#" + std::to_string(next) + "=COLOUR_RGB('',0.80,0.80,0.80);\n";
+    ++next;
+    text += "#" + std::to_string(next) + "=COLOUR_RGB('',0.16,0.16,0.18);\n";
+    text += "ENDSEC;\nEND-ISO-10303-21;\n";
+    return text;
 }
 
 void selfTest() {
@@ -571,6 +674,86 @@ void selfTest() {
             const int headerHeight = byte(22) | (byte(23) << 8) | (byte(24) << 16);
             check(headerWidth == 640 && headerHeight == 400, "the BMP header has the right size");
         }
+        std::remove(path.c_str());
+    }
+
+    // --- real 3D models ------------------------------------------------------
+    // A part with a 3D model must be drawn from that model, not from a generated box.
+    // The STEP reader is checked on a synthetic solid, then the whole path is rendered.
+    {
+        pcbv::StepMesh mesh;
+        std::string error;
+        const std::string step = boxStep(3.2, 2.4, 1.0);
+        check(pcbv::looksLikeStep(step), "STEP text is recognised");
+        check(pcbv::parseStepMesh(step, mesh, &error), "the STEP reader tessellates a solid box");
+        check(mesh.triangles.size() == 12, "a six sided box becomes twelve triangles");
+        check(std::fabs(mesh.width() - 3.2) < 0.001 && std::fabs(mesh.depth() - 2.4) < 0.001 &&
+                  std::fabs(mesh.height() - 1.0) < 0.001,
+              "the model keeps its real dimensions");
+        check(mesh.hasColor && mesh.colorR < 0.3, "the darkest colour of the model is its body");
+        check(!pcbv::parseStepMesh("not a step file", mesh, &error),
+              "a file that is not STEP is refused");
+        check(pcbv::looksLikeStep(std::string("ISO-10303-21;")), "the STEP signature is matched");
+
+        // A component that owns a model is rendered from it, so a body appears where the
+        // generated box would be somewhere else, in the model's own colour.
+        const std::string path = "/tmp/pcbv-smoke-model.PcbDoc";
+        std::string text =
+            "|RECORD=Board|KIND=Protel_Advanced_PCB|VERSION=5.00|VX0=0mil|VY0=0mil|"
+            "KIND1=0|VX1=2000mil|VY1=0mil|KIND2=0|VX2=2000mil|VY2=1500mil|"
+            "KIND3=0|VX3=0mil|VY3=1500mil\r\n"
+            "|RECORD=Component|ID=0|LAYER=TOP|X=1000mil|Y=750mil|PATTERN=BOX|HEIGHT=20mil|"
+            "SOURCEDESIGNATOR=U1\r\n";
+        for (int row = 0; row < 2; ++row) {
+            for (int i = 0; i < 4; ++i) {
+                text += "|RECORD=Pad|COMPONENT=0|LAYER=TOP|NAME=" +
+                        std::to_string(row * 4 + i + 1) + "|X=" + std::to_string(860 + i * 93) +
+                        "mil|Y=" + std::to_string(row == 0 ? 660 : 840) +
+                        "mil|XSIZE=60mil|YSIZE=60mil\r\n";
+            }
+        }
+        if (FILE* f = std::fopen(path.c_str(), "wb")) {
+            std::fwrite(text.data(), 1, text.size(), f);
+            std::fclose(f);
+        }
+        pcbv::ParseOutcome parsed = pcbv::parseFile(path);
+        check(parsed.ok && parsed.document.components.size() == 1, "the model fixture parses");
+
+        // Attach the model exactly as a library would: the component points at it.
+        pcbv::EmbeddedModel model;
+        model.name = "BOX.step";
+        model.stepText = step;
+        parsed.document.models.push_back(model);
+        parsed.document.components.front().modelIndex = 0;
+
+        pcbv::BoardRenderOptions renderOptions;
+        renderOptions.hiddenLayers = pcbv::defaultHiddenLayers();
+        pcbv::ThreeDView view;
+        view.width = 640;
+        view.height = 400;
+        view.supersample = 1;
+        view.yawDeg = 30.0;
+        view.elevationDeg = 50.0;
+        const pcbv::ThreeDImage withModel = pcbv::render3D(parsed.document, renderOptions, view);
+        check(withModel.valid(), "a part with a real model renders");
+
+        int modelPixels = 0;
+        if (withModel.valid()) {
+            for (const std::uint32_t pixel : withModel.pixels) {
+                const int r = static_cast<int>((pixel >> 16) & 0xFF);
+                const int g = static_cast<int>((pixel >> 8) & 0xFF);
+                const int b = static_cast<int>(pixel & 0xFF);
+                // 0.16/0.16/0.18 lit from above stays a neutral grey the fallback never uses.
+                if (r >= 40 && r <= 70 && std::abs(r - g) <= 4 && b >= r && b - r <= 6) ++modelPixels;
+            }
+            check(modelPixels > 200, "the model is drawn in the colour it declares");
+        }
+
+        // Without a model the same part still renders: the generated body is the fallback.
+        parsed.document.components.front().modelIndex = -1;
+        const pcbv::ThreeDImage withoutModel = pcbv::render3D(parsed.document, renderOptions, view);
+        check(withoutModel.valid() && withoutModel.pixels != withModel.pixels,
+              "a part without a model falls back to a generated body");
         std::remove(path.c_str());
     }
 

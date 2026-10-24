@@ -1331,6 +1331,10 @@ void MainWindow::openDocument(const QString& path) {
     }
     slots_.push_back(slot);
 
+    // A library brings the real 3D models of its footprints. Every open board that uses
+    // one of them picks them up, so the preview shows the actual part instead of a box.
+    attachLibraryModels();
+
     switching_ = true;
     docTabs_->addTab(slots_.back().title);
     docTabs_->setTabToolTip(docTabs_->count() - 1, absolute);
@@ -1701,6 +1705,15 @@ QString MainWindow::libraryItemDetailsHtml(int index) const {
                                    .arg(footprint.regionCount)
                                    .arg(footprint.fillCount));
         }
+        // The 3D body lives in the library, so say so: it is what the preview draws.
+        if (!footprint.models.empty()) {
+            QStringList names;
+            for (const pcbv::EmbeddedModel& model : footprint.models)
+                names << qs(model.name);
+            row(tr("3D model"), names.join(QStringLiteral(", ")));
+        } else {
+            row(tr("3D model"), tr("none — the preview draws an approximate body"));
+        }
         html += "</table>";
 
         if (!footprint.geometry.pads.empty()) {
@@ -2057,6 +2070,19 @@ void MainWindow::restoreViewState() {
         if (compareHint_ != nullptr) compareHint_->setText(slot.comparisonHint);
         tabs_->setTabVisible(tabs_->indexOf(comparePage_), true);
     }
+}
+
+void MainWindow::attachLibraryModels() {
+    for (DocumentSlot& board : slots_) {
+        if (board.document.type != pcbv::DocType::PcbDoc) continue;
+        for (const DocumentSlot& library : slots_) {
+            if (library.library.footprints.empty()) continue;
+            pcbv::attachModels(board.document, library.library);
+        }
+    }
+    // The board tabs pick their new models up when they are activated again
+    // (MainWindow::setDocument hands the document to BoardView, which re-renders), so the
+    // view the user is looking at keeps its zoom and camera.
 }
 
 void MainWindow::activateDocument(int index) {

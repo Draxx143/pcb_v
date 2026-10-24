@@ -18,9 +18,13 @@
 #include <cstring>
 #include <iomanip>
 #include <map>
+#include <cctype>
 #include <sstream>
 
 #include "AltiumInternal.h"
+#include "AltiumParser.h"
+#include "Inflate.h"
+#include "Step.h"
 #include "AltiumText.h"
 #include "BoardIndex.h"
 
@@ -134,6 +138,92 @@ std::string padLayerLabel(const std::vector<Pad>& pads) {
 // ---------------------------------------------------------------------------
 // PcbLib
 // ---------------------------------------------------------------------------
+
+/// Reads the 3D models of a library. Altium stores each model as a zlib compressed STEP
+/// file under the "Models" storage ("0", "1", …) and keeps its name, rotation and offset in
+/// the "Models/Data" parameter block. This is the real part data — not a guess.
+std::vector<EmbeddedModel> readEmbeddedModels(CompoundFile& file) {
+    std::vector<EmbeddedModel> models;
+    // Models live under the library storage in binary PcbLib files.
+    const FileEntry* library = file.root().find("Library");
+    const FileEntry* storage = library != nullptr ? library->find("Models")
+                                                 : file.root().find("Models");
+    if (storage == nullptr) return models;
+    const std::string base = storage->path.empty() ? std::string("Models") : storage->path;
+
+    // Model names/placements, in the same order as the numeric stream names.
+    std::vector<std::vector<Property>> parameters;
+    {
+        const std::vector<std::uint8_t> data = file.stream(base + "/Data");
+        std::size_t start = 0;
+        for (std::size_t i = 0; i <= data.size(); ++i) {
+            if (i < data.size() && data[i] != 0) continue;
+            if (i > start) {
+                std::vector<Property> block =
+                    text::parseParameters(data.data() + start, i - start);
+                if (!block.empty()) parameters.push_back(std::move(block));
+            }
+            start = i + 1;
+        }
+    }
+
+    // Numeric stream names sorted by their value: "0", "1", "2", …
+    std::vector<std::pair<int, std::string>> streams;
+    for (const FileEntry& entry : storage->children) {
+        if (entry.isStorage) continue;
+        bool numeric = !entry.name.empty();
+        for (const char c : entry.name) {
+            if (c < '0' || c > '9') numeric = false;
+        }
+        if (!numeric) continue;
+        streams.emplace_back(std::atoi(entry.name.c_str()), entry.name);
+    }
+    std::sort(streams.begin(), streams.end());
+
+    for (std::size_t index = 0; index < streams.size(); ++index) {
+        const std::string path = base + "/" + streams[index].second;
+        const std::vector<std::uint8_t> raw = file.stream(path);
+        if (raw.empty()) continue;
+
+        std::vector<std::uint8_t> decoded;
+        if (!inflateAny(raw.data(), raw.size(), decoded)) continue;
+        const std::string stepText(reinterpret_cast<const char*>(decoded.data()), decoded.size());
+        if (!looksLikeStep(stepText)) continue;
+
+        EmbeddedModel model;
+        model.stepText = stepText;
+        model.name = "model " + streams[index].second;
+        if (index < parameters.size()) {
+            const std::vector<Property>& block = parameters[index];
+            const std::string name = valueOf(block, "NAME");
+            if (!name.empty()) model.name = name;
+            model.id = valueOf(block, "ID");
+            model.rotationX = text::parseNumber(valueOf(block, "ROTX"));
+            model.rotationY = text::parseNumber(valueOf(block, "ROTY"));
+            model.rotationZ = text::parseNumber(valueOf(block, "ROTZ"));
+            model.dz = text::parseNumber(valueOf(block, "DZ"));
+        }
+        models.push_back(std::move(model));
+    }
+    return models;
+}
+
+/// Every model id the footprint refers to ("MODELID={…}" inside its 3D body record).
+std::vector<std::string> modelIds(const std::vector<std::uint8_t>& data) {
+    static const std::string marker = "MODELID=";
+    std::vector<std::string> ids;
+    const std::string text(reinterpret_cast<const char*>(data.data()), data.size());
+    std::size_t pos = 0;
+    while ((pos = text.find(marker, pos)) != std::string::npos) {
+        pos += marker.size();
+        const std::size_t end = text.find_first_of("|\0", pos);
+        const std::string id = text.substr(pos, end == std::string::npos ? std::string::npos : end - pos);
+        if (!id.empty()) ids.push_back(id);
+        if (end == std::string::npos) break;
+        pos = end;
+    }
+    return ids;
+}
 
 /// Reads one pad record: three string blocks, one skipped block, the main block and the
 /// trailing solder-mask block (the same layout the PcbDoc reader uses).
@@ -387,6 +477,9 @@ bool readPcbLibrary(CompoundFile& file, Library& library, std::string& error) {
         return name;
     };
 
+    // Real 3D models, shared by the footprints that refer to them.
+    const std::vector<EmbeddedModel> models = readEmbeddedModels(file);
+
     for (std::size_t index = 0; index < names.size(); ++index) {
         const std::string& name = names[index];
         LibraryFootprint footprint;
@@ -419,6 +512,20 @@ bool readPcbLibrary(CompoundFile& file, Library& library, std::string& error) {
 
         int unknown = 0;
         readFootprintPrimitives(stream, namePos, footprint, library.warnings, unknown);
+
+        // The 3D body record names its model ("MODELID={…}"), so the right model can be
+        // attached without guessing.
+        for (const std::string& id : modelIds(stream)) {
+            for (const EmbeddedModel& model : models) {
+                if (!model.id.empty() && model.id == id) {
+                    footprint.models.push_back(model);
+                    break;
+                }
+            }
+        }
+        if (footprint.models.empty() && models.size() == 1 && footprint.bodyCount > 0) {
+            footprint.models = models;   // a single model library: it is the body
+        }
         library.footprints.push_back(std::move(footprint));
     }
 
@@ -935,6 +1042,11 @@ Document footprintDocument(const LibraryFootprint& footprint, const std::string&
     component.padCount = footprint.padCount;
     component.pads = footprint.geometry.pads;
     component.layer = padLayerLabel(footprint.geometry.pads);
+    // The real 3D model of this footprint travels with the preview document.
+    if (!footprint.models.empty() && !footprint.models.front().stepText.empty()) {
+        document.models = footprint.models;
+        component.modelIndex = 0;
+    }
     document.components.push_back(std::move(component));
 
     // Pads belong to this single component.
@@ -1014,6 +1126,15 @@ std::string libraryToText(const Library& library) {
                 << footprint.padCount << std::setw(7) << footprint.trackCount << std::setw(5)
                 << footprint.arcCount << std::setw(5) << footprint.viaCount << ' ' << sizeText
                 << "   " << description << "\n";
+        }
+        // A footprint can carry the real STEP body; the 3D view draws it instead of a box.
+        std::size_t withModel = 0;
+        for (const LibraryFootprint& footprint : library.footprints) {
+            if (!footprint.models.empty()) ++withModel;
+        }
+        if (withModel > 0) {
+            out << "\n3D models  " << withModel << " of " << library.footprints.size()
+                << " footprint(s) carry a STEP body (Models storage)\n";
         }
     } else {
         out << "\n" << std::left;
@@ -1432,6 +1553,79 @@ bool parsePadRecord(const std::vector<std::uint8_t>& data, std::size_t& pos, Pad
     return readPadRecord(data, pos, pad);
 }
 } // namespace detail
+
+namespace {
+
+/// Lower case with everything but letters and digits dropped: "QFN-24_4x4" and
+/// "qfn 24 4x4" have to compare equal when a board and a library spell a footprint
+/// slightly differently.
+std::string fingerprint(const std::string& text) {
+    std::string out;
+    out.reserve(text.size());
+    for (const char c : text) {
+        const auto ch = static_cast<unsigned char>(c);
+        if (std::isalnum(ch)) out.push_back(static_cast<char>(std::tolower(ch)));
+    }
+    return out;
+}
+
+} // namespace
+
+std::size_t attachModels(Document& document, const Library& library) {
+    if (library.footprints.empty()) return 0;
+    std::size_t attached = 0;
+    for (Component& component : document.components) {
+        if (component.modelIndex >= 0) continue;   // already has one
+        const std::string wanted = !component.footprint.empty() ? component.footprint : component.name;
+        const std::string needle = fingerprint(wanted);
+        if (needle.empty()) continue;
+
+        const LibraryFootprint* match = nullptr;
+        for (const LibraryFootprint& footprint : library.footprints) {
+            if (fingerprint(footprint.name) == needle) {
+                match = &footprint;
+                break;
+            }
+        }
+        if (match == nullptr) {
+            // Fall back to a footprint whose name contains the part's, once the overlap is
+            // long enough to mean something ("QFN-24" inside "QFN-24 4x4") — but only when
+            // exactly one candidate exists, so a model is never attached by guesswork.
+            const LibraryFootprint* candidateMatch = nullptr;
+            int candidates = 0;
+            for (const LibraryFootprint& footprint : library.footprints) {
+                const std::string candidate = fingerprint(footprint.name);
+                const std::string& longer = candidate.size() > needle.size() ? candidate : needle;
+                const std::string& shorter = candidate.size() > needle.size() ? needle : candidate;
+                if (shorter.size() >= 6 && longer.find(shorter) != std::string::npos) {
+                    candidateMatch = &footprint;
+                    ++candidates;
+                }
+            }
+            if (candidates == 1) match = candidateMatch;
+        }
+        if (match == nullptr || match->models.empty()) continue;
+
+        // Copy the models once and point the component at them.
+        for (const EmbeddedModel& model : match->models) {
+            if (model.stepText.empty()) continue;
+            if (component.modelIndex < 0) component.modelIndex = static_cast<int>(document.models.size());
+            document.models.push_back(model);
+        }
+        if (component.modelIndex >= 0) ++attached;
+    }
+    return attached;
+}
+
+std::size_t attachModelsFromFile(Document& document, const std::string& libraryPath,
+                                 std::string* error) {
+    const ParseOutcome outcome = parseFile(libraryPath);
+    if (!outcome.ok) {
+        if (error != nullptr) *error = outcome.error;
+        return 0;
+    }
+    return attachModels(document, outcome.library);
+}
 
 std::string librarySummary(const Library& library) {
     std::ostringstream out;

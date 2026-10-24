@@ -113,6 +113,7 @@ private:
     void log(const QString& message);
     void setDocument(const pcbv::Document& document);
     void activateDocument(int index);
+    void attachLibraryModels();
     void closeDocument(int index);
     void captureViewState();
     void restoreViewState();

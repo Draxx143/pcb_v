@@ -141,6 +141,17 @@ struct Property {
     std::string value;
 };
 
+/// A real 3D model of a part: the STEP file Altium embeds in the footprint library.
+struct EmbeddedModel {
+    std::string name;       ///< file name inside the library ("QFN-24.step")
+    std::string id;         ///< the library's model id ("{GUID}")
+    std::string stepText;   ///< decoded ISO-10303-21 text ("" when it is another format)
+    double rotationX = 0.0; ///< degrees, from the library's model record
+    double rotationY = 0.0;
+    double rotationZ = 0.0;
+    double dz = 0.0;        ///< mm, model offset along the board normal
+};
+
 /// A component / part, from either the schematic or the PCB.
 struct Component {
     std::string designator;      // "R12"
@@ -165,6 +176,7 @@ struct Component {
     int padCount = 0;            // PCB pads
     int throughHolePads = 0;
     int partCount = 1;           // sub-parts for multi-part symbols
+    int modelIndex = -1;         // index into Document::models (-1 = no 3D model)
     int componentIndex = -1;     // index inside Components6 (PCB)
     std::vector<Pin> pins;
     std::vector<Pad> pads;
@@ -247,6 +259,9 @@ struct Document {
     std::uint64_t fileSize = 0;
 
     std::vector<Component> components;
+    /// Real 3D models attached to this document (from a footprint library); a component
+    /// points into this list with Component::modelIndex.
+    std::vector<EmbeddedModel> models;
     std::vector<Net> nets;
     std::vector<FileEntry> structure;  // OLE container tree (binary documents only)
 

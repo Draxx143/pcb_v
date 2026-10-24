@@ -40,7 +40,8 @@ void printUsage() {
         "  pcbv-cli --json <out.json> <file>\n"
         "  pcbv-cli --html <out.html> <file>\n"
         "  pcbv-cli --svg  <out.svg>  <file.PcbDoc>  board drawing (2D, scalable)\n"
-        "  pcbv-cli --3d   <out.bmp>  <file.PcbDoc>  3D preview (mask, copper, parts)\n"
+        "  pcbv-cli --3d   <out.bmp>  <file.PcbDoc> [lib.PcbLib ...]  3D preview\n"
+        "                                            (real part models from the libraries)\n"
         "  pcbv-cli --nets  <file.PcbDoc>            net table, track lengths and the stackup\n"
         "  pcbv-cli --netlist <file.PcbDoc>          connectivity: nets, pads, layers, positions\n"
         "  pcbv-cli --netlist-csv <out.csv> <file>   the same table as CSV\n"
@@ -364,6 +365,18 @@ int main(int argc, char** argv) {
         if (!result.library.footprints.empty()) {
             drawing = pcbv::footprintDocument(result.library.footprints.front(), doc.fileName);
             what = "footprint '" + result.library.footprints.front().name + "'";
+        }
+        // Real part models: any library given on the command line is matched against the
+        // components by footprint name, so the preview draws the vendor's own STEP body.
+        for (std::size_t i = 3; i < args.size(); ++i) {
+            std::string libraryError;
+            const std::size_t attached =
+                pcbv::attachModelsFromFile(drawing, args[i], &libraryError);
+            if (!libraryError.empty()) {
+                std::cerr << "warning: " << args[i] << ": " << libraryError << "\n";
+            } else if (attached > 0) {
+                std::cout << "models: " << attached << " part(s) from " << args[i] << "\n";
+            }
         }
         pcbv::ThreeDView view;
         view.width = 1600;
