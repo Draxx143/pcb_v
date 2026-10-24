@@ -1422,7 +1422,7 @@ void MainWindow::populateLibrary() {
                                   .arg(slots_[static_cast<std::size_t>(active_)].title));
     } else {
         libraryTable_->setHorizontalHeaderLabels({tr("Symbol"), tr("Pins"), tr("Parts"),
-                                                  tr("Designator"), tr("Height (mm)"),
+                                                  tr("Designator"), QString(),
                                                   tr("Description")});
         libraryTable_->setRowCount(static_cast<int>(library.symbols.size()));
         for (int row = 0; row < static_cast<int>(library.symbols.size()); ++row) {
@@ -1443,6 +1443,8 @@ void MainWindow::populateLibrary() {
                                   .arg(slots_[static_cast<std::size_t>(active_)].title));
     }
 
+    // The "Height" column only means something for footprints.
+    libraryTable_->setColumnHidden(4, !footprintLibrary);
     libraryTable_->setSortingEnabled(true);
     applyLibraryFilter(libraryFilter_ != nullptr ? libraryFilter_->text() : QString());
 }
@@ -1665,8 +1667,12 @@ void MainWindow::showLibraryDocument() {
     log(tr("Opened %1  (%2)").arg(qs(document_.fileName), qs(pcbv::docTypeName(document_.type))));
     log(tr("Library: %1").arg(qs(pcbv::librarySummary(slot.library))));
     for (const std::string& warning : slot.library.warnings) log(tr("warning: %1").arg(qs(warning)));
-    statusBar()->showMessage(tr("%1  ·  %2").arg(qs(document_.fileName),
-                                                 qs(pcbv::librarySummary(slot.library))));
+    statusBar()->showMessage(
+        footprintLibrary
+            ? tr("%1  ·  %2  ·  pick a footprint to see it on the Board tab")
+                  .arg(qs(document_.fileName), qs(pcbv::librarySummary(slot.library)))
+            : tr("%1  ·  %2").arg(qs(document_.fileName), qs(pcbv::librarySummary(slot.library))),
+        12000);
     updateActionStates();
 }
 
@@ -1938,8 +1944,14 @@ void MainWindow::clearDocument() {
     }
     if (libraryTable_ != nullptr) libraryTable_->setRowCount(0);
     if (libraryInfo_ != nullptr) libraryInfo_->setText(tr("no library"));
-    if (tabs_ != nullptr && libraryPage_ != nullptr) {
-        tabs_->setTabVisible(tabs_->indexOf(libraryPage_), false);
+    if (tabs_ != nullptr) {
+        if (libraryPage_ != nullptr) tabs_->setTabVisible(tabs_->indexOf(libraryPage_), false);
+        // Back to the normal, empty document layout.
+        if (table_ != nullptr && table_->parentWidget() != nullptr)
+            tabs_->setTabVisible(tabs_->indexOf(table_->parentWidget()), true);
+        if (bomTable_ != nullptr && bomTable_->parentWidget() != nullptr)
+            tabs_->setTabVisible(tabs_->indexOf(bomTable_->parentWidget()), true);
+        tabs_->setCurrentIndex(0);
     }
     updateDocumentTitle();
     updateActionStates();
