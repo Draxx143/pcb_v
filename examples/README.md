@@ -22,4 +22,8 @@ wrote /home/<you>/demo-3d.bmp (3D board, 1600x1000)
 The `.bmp` opens in any image viewer (and in a browser). Inside the app, open the same file
 and press `3` for the 3D tab.
 
-The board is a fixture, not a real design: it has no nets and no copper other than the pads.
+The board is a fixture, not a real design, but it is routed like one: three nets (`VIN`,
+`GND`, `OUT`), 32 top and bottom tracks with 45 degree bends, two vias and 30 pads (round
+plated holes for the through-hole parts, rounded pads for the surface mount ones). That
+makes it useful for judging the drawing itself: copper colour per layer, bare metal pads
+with punched holes, designators clear of the pads and the board outline.

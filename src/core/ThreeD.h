@@ -21,13 +21,13 @@ namespace pcbv {
 
 /// Camera + look of the 3D preview.
 struct ThreeDView {
-    double yawDeg = 35.0;         ///< rotation around the board normal
-    double elevationDeg = 52.0;   ///< 90 = straight down on the board, 0 = edge on
+    double yawDeg = 32.0;         ///< rotation around the board normal
+    double elevationDeg = 38.0;   ///< 90 = straight down on the board, 0 = edge on
     double zoom = 1.0;            ///< 1 = fit the view
     int width = 1200;             ///< output size in pixels
     int height = 800;
     int supersample = 2;          ///< internal anti-aliasing factor (1..3)
-    std::uint32_t maskColor = 0x16684a;  ///< solder mask colour (0xRRGGBB)
+    std::uint32_t maskColor = 0;   ///< solder mask override (0 = take it from the theme)
     bool shadows = true;          ///< soft contact shadows under the parts
     bool labels = true;           ///< report where the designators would be drawn
 };

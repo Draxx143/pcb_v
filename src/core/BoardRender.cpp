@@ -35,6 +35,20 @@ double normaliseAngle(double angle) {
     return value;
 }
 
+/// Text on a board may be stored at any angle; half of the files use 180 for a label the
+/// designer meant upright. Snapping to the nearest quarter turn and flipping the upside down
+/// ones keeps every designator readable, which is what a viewer has to guarantee.
+double readableRotation(double degrees) {
+    double value = std::fmod(degrees, 360.0);
+    if (value < 0.0) value += 360.0;
+    const double quarter = std::round(value / 90.0) * 90.0;
+    if (std::fabs(value - quarter) <= 4.0) value = quarter;
+    value = std::fmod(value, 360.0);
+    if (value > 90.0 && value <= 270.0) value -= 180.0;   // never upside down
+    if (value > 270.0) value -= 360.0;
+    return value;
+}
+
 } // namespace
 
 bool hasBoardGeometry(const Document& doc) {
@@ -74,12 +88,14 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
         list.primitives.push_back(std::move(primitive));
     };
 
+    const ThemeColours& colours = themeColours();
+
     // --- background ----------------------------------------------------------
     {
         RenderPrimitive background;
         background.kind = RenderPrimitive::Kind::Polygon;
         background.filled = true;
-        background.color = 0x10141a;
+        background.color = colours.canvas;
         background.background = true;
         background.points = {Point{0.0, 0.0}, Point{list.width, 0.0},
                              Point{list.width, list.height}, Point{0.0, list.height}};
@@ -91,7 +107,7 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
         RenderPrimitive outline;
         outline.kind = RenderPrimitive::Kind::Polygon;
         outline.filled = true;
-        outline.color = 0x0b0f14;
+        outline.color = colours.boardFill;
         for (const auto& point : doc.geometry.outline) {
             outline.points.push_back(Point{view.x(point.x), view.y(point.y)});
         }
@@ -99,15 +115,15 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
         push(outline);
         RenderPrimitive edge = outline;
         edge.filled = false;
-        edge.color = 0x97a1ae;
-        edge.strokeWidth = 1.2;
+        edge.color = colours.boardEdge;
+        edge.strokeWidth = 1.4;
         push(edge);
     } else {
         RenderPrimitive frame;
         frame.kind = RenderPrimitive::Kind::Polygon;
         frame.filled = false;
         frame.dashed = true;
-        frame.color = 0x5d646f;
+        frame.color = colours.boardEdge;
         frame.strokeWidth = 1.0;
         const double x0 = view.x(view.minX);
         const double y0 = view.y(view.maxY());
@@ -130,9 +146,15 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
         if (region.pour) {
             // Without Altium's clearance engine the filled shape of a pour cannot be
             // reproduced; draw its contour so the polygon stays visible.
-            polygon.opacity = 0.08;
+            polygon.opacity = 0.10;
             polygon.dashed = true;
-            polygon.strokeWidth = 0.08;
+            polygon.strokeWidth = 0.10;
+        } else if (isSilk(region.layer)) {
+            // A silkscreen region is the outline of a part (or of lettering): filling it
+            // would paint a white slab over the part, so it is drawn as a line.
+            polygon.filled = false;
+            polygon.strokeWidth = 1.6;
+            polygon.opacity = 1.0;
         } else {
             polygon.opacity = 0.5;
             polygon.strokeWidth = 0.05;
@@ -157,9 +179,10 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
         const double py = view.y(cy);
         RenderPrimitive rect;
         rect.kind = RenderPrimitive::Kind::Polygon;
-        rect.filled = true;
+        rect.filled = !isSilk(fill.layer);
         rect.color = layerColor(fill.layer);
         rect.layer = fill.layer;
+        if (!rect.filled) rect.strokeWidth = 1.6;
         for (const auto& corner : {Point{-halfW, -halfH}, Point{halfW, -halfH},
                                    Point{halfW, halfH}, Point{-halfW, halfH}}) {
             rect.points.push_back(Point{px + corner.x * cosA - corner.y * sinA,
@@ -250,16 +273,51 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
             RenderPrimitive body;
             body.kind = RenderPrimitive::Kind::Polygon;
             body.filled = true;
-            body.color = layerColor(padLayer);
+            // A pad is bare metal, not copper under the mask: it reads gold on every layer,
+            // exactly as the plated surface does on the finished board.
+            body.color = colours.pad;
             body.layer = padLayer;
+            body.strokeWidth = 0.9;
+            body.opacity = 1.0;
             body.net = pad.net;
             body.selectable = true;
-            for (const auto& corner : {Point{-halfW, -halfH}, Point{halfW, -halfH},
-                                       Point{halfW, halfH}, Point{-halfW, halfH}}) {
+            // Real pads are not all rectangles: a through-hole pad with the same size in
+            // both directions is a disc, and a surface pad has softened corners. Drawing
+            // every pad as a sharp box is the single clearest "this is not a CAD tool" tell.
+            const bool roundPad = throughHole &&
+                                  std::fabs(widthMil - heightMil) <= 0.12 * std::max(widthMil, heightMil);
+            std::vector<Point> local;
+            if (roundPad) {
+                const int steps = 40;
+                for (int i = 0; i < steps; ++i) {
+                    const double angle = 2.0 * kPi * static_cast<double>(i) / steps;
+                    local.push_back(Point{halfW * std::cos(angle), halfH * std::sin(angle)});
+                }
+            } else {
+                const double r = std::min(std::min(halfW, halfH) * 0.28, std::min(halfW, halfH));
+                const int steps = 5;
+                const struct { double cx, cy, from; } corners[4] = {
+                    {-halfW + r, -halfH + r, 180.0}, {halfW - r, -halfH + r, 270.0},
+                    {halfW - r, halfH - r, 0.0},     {-halfW + r, halfH - r, 90.0}};
+                for (const auto& corner : corners) {
+                    for (int i = 0; i <= steps; ++i) {
+                        const double angle = (corner.from + 90.0 * static_cast<double>(i) / steps) * kPi / 180.0;
+                        local.push_back(Point{corner.cx + r * std::cos(angle), corner.cy + r * std::sin(angle)});
+                    }
+                }
+            }
+            for (const Point& corner : local) {
                 body.points.push_back(Point{px + corner.x * cosA - corner.y * sinA,
                                             py + corner.x * sinA + corner.y * cosA});
             }
             push(body);
+            if (body.strokeWidth > 0.0) {
+                RenderPrimitive rim = body;
+                rim.filled = false;
+                rim.color = colours.padEdge;
+                rim.selectable = false;
+                push(rim);
+            }
 
             if (throughHole) {
                 RenderPrimitive hole;
@@ -267,7 +325,7 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
                 hole.center = Point{px, py};
                 hole.radius = pad.holeSize * view.unit / 2.0;
                 hole.filled = true;
-                hole.color = 0x10141a;
+                hole.color = colours.padHole;
                 push(hole);
             }
         }
@@ -280,7 +338,7 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
         ring.center = Point{view.x(via.x), view.y(via.y)};
         ring.radius = std::max(via.diameter, 0.0) / 2.0 * view.unit;
         ring.filled = true;
-        ring.color = layerColor(74);
+        ring.color = colours.pad;
         ring.layer = 74;
         ring.opacity = 0.9;
         ring.net = via.net;
@@ -288,7 +346,7 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
         push(ring);
         if (via.hole > 0.0) {
             RenderPrimitive hole = ring;
-            hole.color = 0x10141a;
+            hole.color = colours.padHole;
             hole.opacity = 1.0;
             hole.radius = via.hole / 2.0 * view.unit;
             push(hole);
@@ -308,7 +366,7 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
             text.fontSize = label.height * view.unit;
             text.x = view.x(label.x);
             text.y = view.y(label.y);
-            text.rotation = -label.rotation;
+            text.rotation = readableRotation(-label.rotation);
             text.textAnchor = label.anchor;
             push(text);
         }
@@ -319,17 +377,36 @@ BoardRenderList buildBoardRender(const Document& doc, const BoardRenderOptions& 
         const double fontSize = std::max(std::min(view.width, view.height) * view.unit * 0.035, 14.0);
         for (const auto& component : doc.components) {
             if (component.designator.empty()) continue;
+            // A label dropped on the part's own centre sits on top of its pads, which is
+            // exactly where the eye needs to see copper. Park it just above the footprint
+            // instead, and only fall back to "below" when that would leave the board.
+            double minX = component.x - 40.0, maxX = component.x + 40.0;
+            double minY = component.y - 40.0, maxY = component.y + 40.0;
+            if (!component.pads.empty()) {
+                minX = maxX = component.pads.front().x;
+                minY = maxY = component.pads.front().y;
+                for (const auto& pad : component.pads) {
+                    minX = std::min(minX, pad.x - pad.width / 2.0);
+                    maxX = std::max(maxX, pad.x + pad.width / 2.0);
+                    minY = std::min(minY, pad.y - pad.height / 2.0);
+                    maxY = std::max(maxY, pad.y + pad.height / 2.0);
+                }
+            }
+            const double lineHeight = fontSize / view.unit;   // label height in mil
+            double labelY = maxY + lineHeight * 0.55;
+            if (doc.bounds.valid && labelY > doc.bounds.maxY) labelY = minY - lineHeight * 0.45;
+
             RenderPrimitive text;
             text.kind = RenderPrimitive::Kind::Text;
-            text.color = 0xf5d76e;
+            text.color = colours.designator;
             std::string layerText = component.layer;
             for (char& c : layerText) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
             text.layer = layerText.find("BOTTOM") != std::string::npos ? 32 : 1;
             text.text = component.designator;
             text.fontSize = fontSize;
-            text.x = view.x(component.x);
-            text.y = view.y(component.y);
-            text.strokeWidth = 0.6;  // outline used for contrast against copper
+            text.x = view.x((minX + maxX) / 2.0);
+            text.y = view.y(labelY);
+            text.strokeWidth = 0.0;  // plain ink reads cleaner than an outlined label
             push(text);
         }
     }

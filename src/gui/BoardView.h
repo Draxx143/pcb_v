@@ -8,6 +8,7 @@
 
 #include "core/BoardRender.h"
 #include "core/Export.h"
+#include "core/LayerStyle.h"
 #include "core/Model.h"
 #include "core/ThreeD.h"
 
@@ -40,6 +41,14 @@ public:
 
     /// Frames one component (index into document.components).
     void zoomToComponent(int index);
+
+    /// Dot grid on the canvas and a crosshair under the pointer, like the web CAD tools.
+    void setGridVisible(bool on);
+    bool gridVisible() const { return showGrid_; }
+
+    /// The colour language of the drawing (EasyEDA blue/gold or the classic warm palette).
+    void setTheme(pcbv::BoardTheme theme);
+    pcbv::BoardTheme theme() const { return pcbv::currentTheme(); }
 
     /// 3D preview: a software rendered board (solder mask, copper, pads, extruded
     /// bodies). Drag rotates, the wheel zooms, a double click resets the camera.
@@ -101,6 +110,8 @@ private:
     QString netAt(const QPointF& widgetPos) const;
     void clampPan();
     void paintMeasure(QPainter& painter) const;
+    void paintGrid(QPainter& painter, double scale) const;
+    void paintCrosshair(QPainter& painter) const;
     void paintThreeD(QPainter& painter);
     void resetThreeDCamera();
     void drawPrimitives(QPainter& painter, double scale, bool forPrint) const;
@@ -114,6 +125,7 @@ private:
     pcbv::BoardRenderOptions options_;
     pcbv::BoardRenderList list_;
 
+    bool showGrid_ = true;
     bool hasDocument_ = false;
     bool dirty_ = true;
     int selected_ = -1;

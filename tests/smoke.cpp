@@ -23,6 +23,7 @@
 #include "core/Netlist.h"
 #include "core/Recent.h"
 #include "core/KiCadLibrary.h"
+#include "core/LayerStyle.h"
 #include "core/Library.h"
 #include "core/PartIndex.h"
 #include "core/Search.h"
@@ -646,6 +647,10 @@ void selfTest() {
               "the 3D renderer fills an image buffer");
         if (image.valid()) {
             // Count the colours we expect to be on the board.
+            const pcbv::ThemeColours& theme = pcbv::themeColours();
+            const int maskR = static_cast<int>((theme.mask >> 16) & 0xFF);
+            const int maskG = static_cast<int>((theme.mask >> 8) & 0xFF);
+            const int maskB = static_cast<int>(theme.mask & 0xFF);
             int mask = 0;
             int metal = 0;
             int dark = 0;
@@ -653,7 +658,11 @@ void selfTest() {
                 const int r = static_cast<int>((pixel >> 16) & 0xFF);
                 const int g = static_cast<int>((pixel >> 8) & 0xFF);
                 const int b = static_cast<int>(pixel & 0xFF);
-                if (g > r && g > b && g > 40) ++mask;             // green solder mask
+                // The lit mask keeps the hue of the theme colour: compare the channel order.
+                const bool maskHue = (maskB >= maskG && maskB >= maskR) ? (b > r && b >= g)
+                                     : (maskG >= maskR && maskG >= maskB) ? (g > r && g >= b)
+                                                                         : (r > g && r >= b);
+                if (maskHue && g + r > 40) ++mask;                  // solder mask
                 if (r > 140 && g > 110 && b < 140 && r >= g) ++metal;   // pads
                 if (r < 60 && g < 60 && b < 70) ++dark;           // part bodies / background
             }
@@ -1295,6 +1304,126 @@ void kicadSelfTest() {
 
 } // namespace
 
+/// The drawing has to look like a board on a screen, not like a debug dump: bare-metal pads
+/// with drilled holes, silk as an outline instead of a white slab, readable labels and a
+/// palette that both the flat view and the 3D preview share.
+void boardLookSelfTest() {
+    std::printf("The board drawing looks like a board\n");
+
+    pcbv::setBoardTheme(pcbv::BoardTheme::EasyEda);
+    const pcbv::ThemeColours& easy = pcbv::themeColours();
+
+    pcbv::Document doc;
+    doc.type = pcbv::DocType::PcbDoc;
+    doc.bounds.add(0.0, 0.0);
+    doc.bounds.add(2000.0, 1200.0);
+    doc.geometry.outline = {pcbv::Point{0.0, 0.0}, pcbv::Point{2000.0, 0.0},
+                            pcbv::Point{2000.0, 1200.0}, pcbv::Point{0.0, 1200.0}};
+
+    pcbv::Pad pad;
+    pad.x = 400.0; pad.y = 600.0;
+    pad.width = 80.0; pad.height = 80.0;
+    pad.holeSize = 36.0;
+    pad.layer = 1;
+    pad.designator = "R1";
+    doc.geometry.pads.push_back(pad);
+
+    pcbv::RegionFeature silkBox;
+    silkBox.layer = 33;
+    silkBox.outline = {pcbv::Point{200.0, 200.0}, pcbv::Point{700.0, 200.0},
+                       pcbv::Point{700.0, 500.0}, pcbv::Point{200.0, 500.0}};
+    doc.geometry.regions.push_back(silkBox);
+
+    pcbv::TextFeature upsideDown;
+    upsideDown.layer = 33;
+    upsideDown.text = "U1";
+    upsideDown.x = 900.0;
+    upsideDown.y = 300.0;
+    upsideDown.height = 60.0;
+    upsideDown.rotation = 180.0;
+    doc.geometry.texts.push_back(upsideDown);
+
+    pcbv::TrackFeature top;
+    top.x1 = 100.0; top.y1 = 1000.0; top.x2 = 900.0; top.y2 = 1000.0;
+    top.width = 20.0; top.layer = 1;
+    doc.geometry.tracks.push_back(top);
+
+    const pcbv::BoardRenderList list = pcbv::buildBoardRender(doc, pcbv::BoardRenderOptions());
+
+    // --- pads are bare metal with a hole, not a copper outline ------------------
+    bool goldPad = false, darkHole = false, roundPad = false;
+    for (const auto& primitive : list.primitives) {
+        if (primitive.kind == pcbv::RenderPrimitive::Kind::Polygon && primitive.filled &&
+            primitive.color == easy.pad) {
+            goldPad = true;
+            if (primitive.points.size() > 8) roundPad = true;   // a disc, not a sharp box
+        }
+        if (primitive.kind == pcbv::RenderPrimitive::Kind::Circle && primitive.filled &&
+            primitive.color == easy.padHole) {
+            darkHole = true;
+        }
+    }
+    check(goldPad, "a pad is drawn as filled bare metal");
+    check(roundPad, "a round through-hole pad is drawn as a disc");
+    check(darkHole, "a through-hole pad keeps its drilled hole");
+
+    // --- a silkscreen region is an outline, never a filled slab ---------------
+    bool silkFilled = false, silkOutline = false;
+    for (const auto& primitive : list.primitives) {
+        if (primitive.layer != 33 || primitive.kind != pcbv::RenderPrimitive::Kind::Polygon) continue;
+        if (primitive.filled && primitive.strokeWidth <= 0.0) silkFilled = true;
+        if (!primitive.filled && primitive.strokeWidth > 0.0) silkOutline = true;
+    }
+    check(silkOutline, "a silkscreen region is drawn as its outline");
+    check(!silkFilled, "a silkscreen region does not paint a white slab over the part");
+
+    // --- labels are never upside down ----------------------------------------
+    bool upright = false;
+    for (const auto& primitive : list.primitives) {
+        if (primitive.kind != pcbv::RenderPrimitive::Kind::Text || primitive.text != "U1") continue;
+        upright = primitive.rotation > -90.5 && primitive.rotation < 90.5;
+    }
+    check(upright, "a label stored at 180 degrees is drawn upright");
+
+    // --- the theme decides the colours, in 2D and in 3D ----------------------
+    pcbv::setBoardTheme(pcbv::BoardTheme::Classic);
+    const pcbv::BoardRenderList classic = pcbv::buildBoardRender(doc, pcbv::BoardRenderOptions());
+    std::uint32_t classicTop = 0;
+    for (const auto& primitive : classic.primitives) {
+        if (primitive.layer == 1 && primitive.kind == pcbv::RenderPrimitive::Kind::Line) {
+            classicTop = primitive.color;
+        }
+    }
+    check(classicTop == pcbv::themeColours().copperTop,
+          "the flat view takes its copper colour from the theme");
+    check(classicTop != easy.copperTop, "the two themes really differ");
+
+    pcbv::setBoardTheme(pcbv::BoardTheme::EasyEda);
+    pcbv::ThreeDView view;
+    view.width = 160;
+    view.height = 100;
+    view.supersample = 1;
+    const pcbv::ThreeDImage image = pcbv::render3D(doc, pcbv::BoardRenderOptions(), view);
+    check(image.valid(), "the 3D preview renders the same board");
+    std::uint32_t maskPixel = 0;
+    int maskCount = 0;
+    for (int y = 0; y < image.height; ++y) {
+        for (int x = 0; x < image.width; ++x) {
+            const std::uint32_t pixel = image.at(x, y);
+            const int r = (pixel >> 16) & 0xFF, g = (pixel >> 8) & 0xFF, b = pixel & 0xFF;
+            if (b > r + 20 && b > g + 10) {   // the blue solder mask
+                maskPixel = pixel;
+                ++maskCount;
+            }
+        }
+    }
+    check(maskCount > 200, "the 3D board is painted with the mask colour of the theme");
+    check(maskPixel != 0, "the 3D mask is blue in the EasyEDA theme");
+
+    pcbv::setBoardTheme(pcbv::BoardTheme::EasyEda);
+    std::printf("\n");
+}
+
 int main(int argc, char** argv) {
     if (argc <= 1) {
         std::printf("usage: pcbv-smoke --self-test | <files...>\n");
@@ -1304,6 +1433,8 @@ int main(int argc, char** argv) {
         selfTest();
         std::printf("\n");
         kicadSelfTest();
+        std::printf("\n");
+        boardLookSelfTest();
         std::printf("\n%s (%d failure%s)\n", g_failures == 0 ? "PASSED" : "FAILED", g_failures,
                     g_failures == 1 ? "" : "s");
         return g_failures == 0 ? 0 : 1;

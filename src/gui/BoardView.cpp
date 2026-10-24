@@ -508,6 +508,67 @@ QString BoardView::netAt(const QPointF& widgetPos) const {
     return QString::fromStdString(list_.primitives[static_cast<std::size_t>(index)].net);
 }
 
+void BoardView::setGridVisible(bool on) {
+    if (showGrid_ == on) return;
+    showGrid_ = on;
+    update();
+}
+
+void BoardView::setTheme(pcbv::BoardTheme theme) {
+    if (pcbv::currentTheme() == theme) return;
+    pcbv::setBoardTheme(theme);
+    dirty_ = true;        // the display list stores colours, so it has to be rebuilt
+    threeDDirty_ = true;  // and so does the software rendered preview
+    update();
+}
+
+/// Dot grid in board space every 100 mil (2.54 mm), the pitch every CAD tool starts with.
+void BoardView::paintGrid(QPainter& painter, double scale) const {
+    if (!showGrid_ || list_.empty()) return;
+    const double pitch = 100.0 * list_.unitsPerMil;      // 2.54 mm in device units
+    if (pitch <= 0.0) return;
+    if (pitch * scale < 9.0) return;                     // too dense to be anything but noise
+    const double radius = std::max(0.75 / scale, pitch * 0.010);
+    painter.save();
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(toColor(pcbv::themeColours().grid, 0.55));
+    for (double y = 0.0; y <= list_.height + 0.5; y += pitch) {
+        for (double x = 0.0; x <= list_.width + 0.5; x += pitch) {
+            painter.drawEllipse(QPointF(x, y), radius, radius);
+        }
+    }
+
+    // The origin of the board: a small cross with a ring, the way every editor marks (0, 0).
+    const QPointF origin(0.0, list_.height);
+    QPen originPen(toColor(pcbv::themeColours().copperMid, 0.9));
+    originPen.setWidthF(1.4 / scale);
+    painter.setPen(originPen);
+    painter.setBrush(Qt::NoBrush);
+    const double arm = pitch * 0.5;
+    painter.drawLine(QPointF(origin.x() - arm, origin.y()), QPointF(origin.x() + arm, origin.y()));
+    painter.drawLine(QPointF(origin.x(), origin.y() - arm), QPointF(origin.x(), origin.y() + arm));
+    painter.drawEllipse(origin, arm * 0.34, arm * 0.34);
+    painter.restore();
+}
+
+/// A full-window crosshair under the pointer: two hairlines with a gap around the cursor,
+/// the way a measurement cursor looks in a CAD tool.
+void BoardView::paintCrosshair(QPainter& painter) const {
+    if (!cursorInside_ || list_.empty() || threeD_) return;
+    painter.save();
+    QPen pen(toColor(pcbv::themeColours().grid));
+    pen.setWidthF(1.0);
+    pen.setStyle(Qt::DashLine);
+    painter.setPen(pen);
+    const double gap = 14.0;
+    const QPointF point = cursor_;
+    painter.drawLine(QPointF(0.0, point.y()), QPointF(point.x() - gap, point.y()));
+    painter.drawLine(QPointF(point.x() + gap, point.y()), QPointF(width(), point.y()));
+    painter.drawLine(QPointF(point.x(), 0.0), QPointF(point.x(), point.y() - gap));
+    painter.drawLine(QPointF(point.x(), point.y() + gap), QPointF(point.x(), height()));
+    painter.restore();
+}
+
 void BoardView::paintEvent(QPaintEvent* event) {
     Q_UNUSED(event);
     rebuild();
@@ -515,7 +576,7 @@ void BoardView::paintEvent(QPaintEvent* event) {
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setRenderHint(QPainter::TextAntialiasing, true);
-    painter.fillRect(rect(), QColor(0x10, 0x14, 0x1a));
+    painter.fillRect(rect(), toColor(pcbv::themeColours().canvas));
 
     if (list_.empty()) {
         painter.setPen(QColor(0x8a, 0x92, 0x9e));
@@ -544,7 +605,9 @@ void BoardView::paintEvent(QPaintEvent* event) {
     painter.translate(-list_.width / 2.0, -list_.height / 2.0);
 
     drawPrimitives(painter, scale, false);
+    paintGrid(painter, scale);
     painter.restore();
+    paintCrosshair(painter);
 
     // --- selection highlight -------------------------------------------------
     if (selected_ >= 0 && selected_ < static_cast<int>(document_.components.size())) {

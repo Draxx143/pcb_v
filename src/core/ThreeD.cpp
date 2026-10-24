@@ -5,6 +5,7 @@
 // colour + depth buffer with one directional light. Supersampling gives the edges their
 // anti-aliasing.
 #include "ThreeD.h"
+#include "LayerStyle.h"
 
 #include "Step.h"
 
@@ -249,7 +250,9 @@ struct Renderer {
     int height = 0;
     std::vector<std::uint32_t> color;
     std::vector<double> depth;
-    Vec3 light{0.0, 0.0, 1.0};
+    Vec3 light{0.0, 0.0, 1.0};     ///< key light
+    Vec3 fillLight{0.0, 0.0, 1.0}; ///< soft light from the opposite side
+    Vec3 rimLight{0.0, 0.0, 1.0};  ///< grazing light that separates the part from the board
     Vec3 toEye{0.0, 0.0, 1.0};
 
     void resize(int w, int h, std::uint32_t background) {
@@ -257,6 +260,18 @@ struct Renderer {
         height = h;
         color.assign(static_cast<std::size_t>(w) * static_cast<std::size_t>(h), background);
         depth.assign(color.size(), std::numeric_limits<double>::infinity());
+    }
+
+    /// A vertical gradient behind the board instead of a flat fill: the board then sits in a
+    /// studio instead of floating on a wall.
+    void gradientBackground(std::uint32_t top, std::uint32_t bottom) {
+        if (height <= 0) return;
+        for (int y = 0; y < height; ++y) {
+            const double t = height > 1 ? static_cast<double>(y) / (height - 1) : 0.0;
+            const std::uint32_t row = mixColor(top, bottom, t);
+            const std::size_t start = static_cast<std::size_t>(y) * static_cast<std::size_t>(width);
+            for (int x = 0; x < width; ++x) color[start + static_cast<std::size_t>(x)] = row;
+        }
     }
 
     static Vec3 faceNormal(const std::vector<Vec3>& points) {
@@ -278,16 +293,24 @@ struct Renderer {
         Vec3 normal = faceNormal(face.points);
         if (dot(normal, toEye) < 0.0) normal = normal * -1.0;   // light both sides
 
-        const double diffuse = std::max(0.0, dot(normal, light));
+        // Three lights: a key light that models the form, a fill that keeps the shadow side
+        // readable and a rim that draws a bright edge along the silhouette. Flat shading plus
+        // a tone curve is what makes a CAD preview look like a photograph of a board.
+        const double key = std::max(0.0, dot(normal, light));
+        const double fill = std::max(0.0, dot(normal, fillLight));
+        const double rim = std::max(0.0, dot(normal, rimLight));
         const double sky = 0.5 + 0.5 * normal.z;
-        double k = 0.32 + 0.24 * sky + 0.58 * diffuse;
+        const double k = 0.30 + 0.16 * sky + 0.58 * key + 0.24 * fill + 0.12 * rim;
         const Vec3 half = normalised(light + toEye);
         const double specular =
             face.metal > 0.0 ? std::pow(std::max(0.0, dot(normal, half)), face.shininess) * face.metal : 0.0;
-
-        const double r = ((face.color >> 16) & 0xFF) * k + 235.0 * specular;
-        const double g = ((face.color >> 8) & 0xFF) * k + 235.0 * specular;
-        const double b = (face.color & 0xFF) * k + 240.0 * specular;
+        auto tone = [](double value) {
+            const double clamped = std::clamp(value, 0.0, 255.0) / 255.0;
+            return std::pow(clamped, 0.92) * 255.0;   // lifts the mid tones like a studio shot
+        };
+        const double r = tone(((face.color >> 16) & 0xFF) * k + 245.0 * specular);
+        const double g = tone(((face.color >> 8) & 0xFF) * k + 245.0 * specular);
+        const double b = tone((face.color & 0xFF) * k + 250.0 * specular);
         const std::uint32_t shaded = rgb(r, g, b);
 
         // Project the polygon and derive the depth plane (all faces are planar).
@@ -432,13 +455,40 @@ struct Palette {
     std::uint32_t copperTrench = 0x0b4a32; ///< the seam around a track under the mask
     std::uint32_t pad = 0xd8b26a;
     std::uint32_t padEdge = 0x8a6f38;
+    std::uint32_t barrel = 0xd9ae35;        ///< plated wall of a drilled hole
     std::uint32_t silk = 0xe8edf2;
     std::uint32_t substrate = 0xa8996f;
     std::uint32_t hole = 0x0b0d10;
     std::uint32_t body = 0x24272c;
     std::uint32_t bodySide = 0x1b1e22;
     std::uint32_t metal = 0xc3cad2;
+    std::uint32_t skyTop = 0x11161c;        ///< studio background, top row
+    std::uint32_t skyBottom = 0x0b0f13;     ///< studio background, bottom row
 };
+
+/// The 3D palette of the theme in force, so the preview and the flat view agree on colours.
+Palette paletteFor(const ThemeColours& colours) {
+    Palette palette;
+    palette.mask = colours.mask;
+    palette.maskDark = scaleColor(palette.mask, 0.60);
+    palette.maskMid = scaleColor(palette.mask, 0.78);
+    palette.copperTop = colours.copperUnderMask;
+    palette.copperBottom = scaleColor(colours.copperUnderMask, 0.86);
+    palette.copperBase = mixColor(palette.copperTop, palette.mask, 0.25);
+    palette.copperTrench = scaleColor(palette.mask, 0.52);
+    palette.pad = colours.pad;
+    palette.padEdge = colours.padEdge;
+    palette.barrel = colours.barrel;
+    palette.silk = colours.silk;
+    palette.substrate = colours.substrate;
+    palette.hole = colours.hole;
+    palette.body = colours.body;
+    palette.bodySide = colours.bodySide;
+    palette.metal = colours.metal;
+    palette.skyTop = colours.threeTop;
+    palette.skyBottom = colours.threeBottom;
+    return palette;
+}
 
 /// Extent of one component in its own frame (millimetres, body area only).
 struct BodyPlan {
@@ -725,16 +775,17 @@ ThreeDImage render3D(const Document& document, const BoardRenderOptions& options
 
     Camera camera = makeCamera(view.yawDeg, view.elevationDeg);
     const Vec3 light = normalised(camera.up * 0.85 + camera.right * -0.45 + camera.forward * -0.35);
+    const Vec3 fillLight = normalised(camera.up * 0.30 + camera.right * 0.85 + camera.forward * -0.40);
+    const Vec3 rimLight = normalised(camera.up * 0.10 + camera.right * 0.20 + camera.forward * -1.0 -
+                                     camera.up * 0.9);
     const Vec3 toEye = normalised(camera.forward * -1.0);
 
-    Palette palette;
-    palette.mask = view.maskColor;
-    palette.maskDark = scaleColor(palette.mask, 0.62);
-    palette.maskMid = scaleColor(palette.mask, 0.80);
-    palette.copperTop = mixColor(palette.mask, 0x6fd3a4, 0.50);
-    palette.copperBottom = mixColor(palette.mask, 0x5fb9cc, 0.45);
-    palette.copperTrench = scaleColor(palette.mask, 0.55);
-    palette.padEdge = scaleColor(palette.pad, 0.55);
+    Palette palette = paletteFor(themeColours());
+    if (view.maskColor != 0) {
+        palette.mask = view.maskColor;
+        palette.maskDark = scaleColor(palette.mask, 0.60);
+        palette.maskMid = scaleColor(palette.mask, 0.78);
+    }
 
     const BoardFrame frame = boardFrame(document);
     const std::vector<std::pair<double, double>> outline = boardOutlineMm(document, frame);
@@ -760,8 +811,15 @@ ThreeDImage render3D(const Document& document, const BoardRenderOptions& options
         for (std::size_t i = 0; i < outline.size(); ++i) {
             const auto& a = outline[i];
             const auto& b = outline[(i + 1) % outline.size()];
-            scene.addQuad({a.first, a.second, bottomZ}, {b.first, b.second, bottomZ},
-                          {b.first, b.second, topZ}, {a.first, a.second, topZ}, palette.substrate);
+            // The laminate edge, with a brighter bead along the very top: that thin line is
+            // what tells the eye how thick the board is.
+            const double bead = topZ - 0.06;
+            scene.addQuad({a.first, a.second, topZ}, {b.first, b.second, topZ},
+                          {b.first, b.second, bead}, {a.first, a.second, bead},
+                          mixColor(palette.mask, 0xffffff, 0.35));
+            scene.addQuad({a.first, a.second, bead}, {b.first, b.second, bead},
+                          {b.first, b.second, bottomZ}, {a.first, a.second, bottomZ},
+                          palette.substrate);
         }
     }
 
@@ -873,8 +931,17 @@ ThreeDImage render3D(const Document& document, const BoardRenderOptions& options
                                  palette.pad, 0.7);
         }
         if (withHole && pad.holeSize > 0.0) {
-            scene.disc(centre.first, centre.second, pad.holeSize * kMilToMm / 2.0,
-                       top ? z + 0.004 : z - 0.004, 16, palette.hole);
+            // A drilled hole is plated: the gold barrel is visible around the void, and the
+            // wall catches the light on the side that faces it.
+            const double holeRadius = pad.holeSize * kMilToMm / 2.0;
+            const double facing = top ? 1.0 : -1.0;
+            scene.disc(centre.first, centre.second, holeRadius * 1.12, z + 0.001 * facing, 18,
+                       palette.barrel, 0.55);
+            scene.disc(centre.first - holeRadius * 0.12, centre.second + holeRadius * 0.10,
+                       holeRadius * 1.02, z + 0.002 * facing, 18,
+                       scaleColor(palette.barrel, 0.72), 0.30);
+            scene.disc(centre.first, centre.second, holeRadius * 0.86, z + 0.003 * facing, 16,
+                       palette.hole);
         }
     };
 
@@ -890,9 +957,12 @@ ThreeDImage render3D(const Document& document, const BoardRenderOptions& options
         for (const ViaFeature& via : document.geometry.vias) {
             const auto centre = frame.toMm(via.x, via.y);
             scene.disc(centre.first, centre.second, std::max(via.diameter, 10.0) * kMilToMm / 2.0,
-                       topZ + 0.012, 16, palette.pad, 0.6);
+                       topZ + 0.012, 18, palette.pad, 0.6);
             if (via.hole > 0.0) {
-                scene.disc(centre.first, centre.second, via.hole * kMilToMm / 2.0, topZ + 0.016, 12,
+                const double holeRadius = via.hole * kMilToMm / 2.0;
+                scene.disc(centre.first, centre.second, holeRadius * 1.10, topZ + 0.014, 16,
+                           palette.barrel, 0.5);
+                scene.disc(centre.first, centre.second, holeRadius * 0.85, topZ + 0.016, 12,
                            palette.hole);
             }
         }
@@ -1019,14 +1089,20 @@ ThreeDImage render3D(const Document& document, const BoardRenderOptions& options
             const double dy = -light.y / std::max(light.z, 0.2) * drop;
             const double rad = component.rotation * kPi / 180.0;
             const double c = std::cos(rad), s = std::sin(rad);
-            std::vector<Vec3> shadow;
-            for (const Vec2& local : {Vec2{minX, minY}, Vec2{maxX, minY},
-                                      Vec2{maxX, maxY}, Vec2{minX, maxY}}) {
-                shadow.push_back(Vec3{centre.first + local.x * c - local.y * s + dx,
-                                      centre.second + local.x * s + local.y * c + dy,
-                                      onBottom ? bottomZ - 0.004 : topZ + 0.004});
+            // Three offset copies at falling opacity: a cheap blur that reads as a soft
+            // shadow instead of a hard black rectangle.
+            for (const auto& layer : {std::pair<double, double>{1.00, 0.20},
+                                      std::pair<double, double>{1.16, 0.12},
+                                      std::pair<double, double>{1.34, 0.06}}) {
+                std::vector<Vec3> shadow;
+                for (const Vec2& local : {Vec2{minX, minY}, Vec2{maxX, minY},
+                                          Vec2{maxX, maxY}, Vec2{minX, maxY}}) {
+                    shadow.push_back(Vec3{centre.first + local.x * c - local.y * s + dx * layer.first,
+                                          centre.second + local.x * s + local.y * c + dy * layer.first,
+                                          onBottom ? bottomZ - 0.004 : topZ + 0.004});
+                }
+                scene.addPolygon(shadow, 0x000000, 0.0, layer.second);
             }
-            scene.addPolygon(shadow, 0x000000, 0.0, 0.28);
         }
     }
 
@@ -1061,8 +1137,11 @@ ThreeDImage render3D(const Document& document, const BoardRenderOptions& options
     Renderer renderer;
     renderer.camera = camera;
     renderer.light = light;
+    renderer.fillLight = fillLight;
+    renderer.rimLight = rimLight;
     renderer.toEye = toEye;
-    renderer.resize(width, height, 0x0d1117);
+    renderer.resize(width, height, palette.skyBottom);
+    renderer.gradientBackground(palette.skyTop, palette.skyBottom);
     renderer.drawScene(scene);
 
     ThreeDImage image = renderer.resolve(outWidth, outHeight, factor);
@@ -1087,7 +1166,7 @@ ThreeDImage render3D(const Document& document, const BoardRenderOptions& options
             label.y = projected.y / factor;
             label.size = 11.0;
             label.text = component.designator;
-            label.color = 0xf5d76e;
+            label.color = 0xffffff;
             image.labels.push_back(std::move(label));
         }
     }

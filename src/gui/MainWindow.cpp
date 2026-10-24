@@ -287,6 +287,30 @@ void MainWindow::createActions() {
         boardView_->setThreeD(on);
     });
 
+    gridAction_ = new QAction(tr("D&ot grid"), this);
+    gridAction_->setCheckable(true);
+    gridAction_->setChecked(true);
+    gridAction_->setToolTip(tr("A 2.54 mm dot grid on the canvas, with a crosshair under the pointer"));
+    connect(gridAction_, &QAction::toggled, this, [this](bool on) {
+        if (boardView_ != nullptr) boardView_->setGridVisible(on);
+    });
+
+    themeEdaAction_ = new QAction(tr("&EasyEDA colours (blue copper, gold pads)"), this);
+    themeEdaAction_->setCheckable(true);
+    themeEdaAction_->setChecked(pcbv::currentTheme() == pcbv::BoardTheme::EasyEda);
+    themeClassicAction_ = new QAction(tr("&Classic colours"), this);
+    themeClassicAction_->setCheckable(true);
+    themeClassicAction_->setChecked(pcbv::currentTheme() == pcbv::BoardTheme::Classic);
+    auto pickTheme = [this](pcbv::BoardTheme theme) {
+        themeEdaAction_->setChecked(theme == pcbv::BoardTheme::EasyEda);
+        themeClassicAction_->setChecked(theme == pcbv::BoardTheme::Classic);
+        if (boardView_ != nullptr) boardView_->setTheme(theme);
+        populateLayers();   // the swatches next to the layer names use the same colours
+    };
+    connect(themeEdaAction_, &QAction::triggered, this, [pickTheme]() { pickTheme(pcbv::BoardTheme::EasyEda); });
+    connect(themeClassicAction_, &QAction::triggered, this,
+            [pickTheme]() { pickTheme(pcbv::BoardTheme::Classic); });
+
     zoomPartAction_ = new QAction(tr("Zoom to selected &part"), this);
     zoomPartAction_->setShortcut(QKeySequence(QStringLiteral("Z")));
     zoomPartAction_->setToolTip(tr("Frame the part selected in the table  (Z)"));
@@ -459,6 +483,10 @@ void MainWindow::createMenus() {
     viewMenu->addSeparator();
     viewMenu->addAction(zoomPartAction_);
     viewMenu->addAction(threeDAction_);
+    viewMenu->addAction(gridAction_);
+    QMenu* themeMenu = viewMenu->addMenu(tr("&Colours"));
+    themeMenu->addAction(themeEdaAction_);
+    themeMenu->addAction(themeClassicAction_);
     viewMenu->addSeparator();
     viewMenu->addAction(summaryAction_);
 

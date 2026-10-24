@@ -187,6 +187,9 @@ private:
     QAction* measureAction_ = nullptr;
     QAction* threeDAction_ = nullptr;
     QAction* zoomPartAction_ = nullptr;
+    QAction* gridAction_ = nullptr;
+    QAction* themeEdaAction_ = nullptr;
+    QAction* themeClassicAction_ = nullptr;
     QAction* printAction_ = nullptr;
     QAction* bomHtmlAction_ = nullptr;
     QAction* compareAction_ = nullptr;
