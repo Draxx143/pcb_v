@@ -188,14 +188,17 @@ Datasheet, UniqueId, File`
 `TO-252-2`، `DO-41`، `R-Axial-DIN0207`، `CP-Radial-D8-P3.5`، `LED-5MM`، `HDR-1X04-2.54`،
 `SOT-23`، `SOIC-8`، `R-0603`، `R-0805`، `C-0603`، `C-0805`.
 
-**دریافت فایل آمادهٔ دانلود** (بدون clone کردن مخزن):
+**دریافت کتابخانه**: فایل‌ها داخل خود مخزن هستند، پس با همان `git pull` می‌آیند:
 
 ```bash
-mkdir -p ~/pcb_v/library
-curl -L -o /tmp/pcbv-library.zip https://github.com/Draxx143/pcb_v/releases/latest/download/pcbv-library.zip
-unzip -o /tmp/pcbv-library.zip -d ~/pcb_v
-ls -lh ~/pcb_v/library
+cd ~/pcb_v && git pull
+ls -lh library
 ```
+
+اگر مخزن را کلون نکرده‌اید، کل پروژه را از GitHub با دکمهٔ **Code → Download ZIP** بگیرید
+(یا مستقیم: `https://codeload.github.com/Draxx143/pcb_v/zip/refs/heads/main`) و پوشهٔ
+`library/` را کنار برنامه بگذارید. ساخت دوبارهٔ فایل zip از روی همین پوشه:
+`python3 tools/pack_library.py`.
 
 **استفاده**: هیچ کاری لازم نیست. برنامه هنگام باز کردن هر برد، خودش `library/` را در این
 مسیرها می‌گردد و مدل‌ها را به قطعات وصل می‌کند:
